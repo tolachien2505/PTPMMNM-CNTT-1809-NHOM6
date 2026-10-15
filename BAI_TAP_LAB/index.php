@@ -17,7 +17,7 @@ session_start();
     <section class="vh-100 d-flex justify-content-center align-items-center">
         <div class="container-fluid h-custom">
             <div class="d-flex flex-row align-items-center justify-content-center">
-                <h2 class="text-primary" style="color: #f66600;">FITDNU - OPEN SOURCE</h2>
+                <h2 class="text-primary" style="color: #f66600;">Smart-PDF-Manager</h2>
             </div>
             <div class="row d-flex justify-content-center align-items-center h-100">
                 <div class="col-md-9 col-lg-6 col-xl-5">
