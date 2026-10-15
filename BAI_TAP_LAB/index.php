@@ -10,7 +10,7 @@ session_start();
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="./css/footer.css" rel="stylesheet">
     <link href="./css/login.css" rel="stylesheet">
-    <title>FITDNU-OpenSource</title>
+    <title>Smart-PDF-Manager</title>
 </head>
 
 <body>
