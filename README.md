@@ -70,21 +70,7 @@ Hệ thống được thiết kế hoàn chỉnh theo 5 nhóm chức năng nghi�
 
 ---
 
-## 🛠️ 3. HAI YÊU CẦU KỸ THUẬT CỐT LÕI
-
-> ### 📌 Yêu Cầu 1: Quản lý danh sách trang và thứ tự thao tác
-> - **Nguyên lý**: Toàn bộ luồng dữ liệu trang được quản lý qua cấu trúc dữ liệu JSON thống nhất giữa Frontend và Backend. Mỗi trang đầu ra được định danh chính xác bằng bộ ba thông tin:
->   $$\text{Page} = \{\text{source\_document\_id}, \text{source\_page\_number}, \text{rotation\_degree}\}$$
-> - **Sự thống nhất**: Giao diện xem trước và tệp PDF đầu ra cam kết đồng nhất 100% về cả thứ tự hiển thị, nhãn nhận diện và góc xoay.
-
-> ### 📌 Yêu Cầu 2: Tách biệt dữ liệu và bảo toàn tệp gốc
-> - **Bảo toàn tệp gốc**: Tệp tải lên được lưu trong thư mục an toàn và đánh dấu Read-Only. Không có bất kỳ tác vụ nào được phép ghi đè lên tệp gốc.
-> - **Độc lập phiên xuất**: Khi bấm xuất tài liệu, kế hoạch xử lý được "chốt phiên" (`is_locked = 1`). Mọi thao tác chỉnh sửa sau đó của người dùng trên giao diện không làm thay đổi tiến trình đang xuất.
-> - **Xử lý lỗi nguyên tử (Atomic)**: Tệp đầu ra xuất ra file tạm; chỉ khi kiểm tra hoàn tất không có lỗi mới kích hoạt trạng thái hoàn thành. Khi có lỗi, hệ thống hủy bỏ dữ liệu dở dang, tuyệt đối không trả kết quả chắp vá như một tài liệu hoàn chỉnh.
-
----
-
-## 🎬 4. HAI TÌNH HUỐNG SỬ DỤNG THỰC TẾ
+## 🎬 3. HAI TÌNH HUỐNG SỬ DỤNG THỰC TẾ
 
 ### 🔹 Tình huống 1: Chuẩn bị bộ hồ sơ hoàn chỉnh từ nhiều nguồn
 ```mermaid
@@ -108,7 +94,7 @@ graph LR
 
 ---
 
-## 📊 5. BỘ DỮ LIỆU THỬ NGHIỆM & PHẠM VI HỖ TRỢ
+## 📊 4. BỘ DỮ LIỆU THỬ NGHIỆM & PHẠM VI HỖ TRỢ
 
 Nhóm xây dựng bộ dữ liệu thử nghiệm chuẩn gồm **6 tệp PDF**, tổng cộng **40 trang**, bao phủ toàn diện các tình huống thực tế:
 
@@ -131,7 +117,7 @@ Nhóm xây dựng bộ dữ liệu thử nghiệm chuẩn gồm **6 tệp PDF**,
 
 ---
 
-## 📂 6. CẤU TRÚC THƯ MỤC DỰ ÁN
+## 📂 5. CẤU TRÚC THƯ MỤC DỰ ÁN
 
 Dự án được cấu trúc bài bản theo chuẩn PSR-4 của cộng đồng mã nguồn mở PHP:
 
@@ -223,7 +209,7 @@ PHATTRIENPHANMEMMANGUONMO/
 
 ---
 
-## 🚀 7. HƯỚNG DẪN CÀI ĐẶT VÀ KHỞI CHẠY HỆ THỐNG
+## 🚀 6. HƯỚNG DẪN CÀI ĐẶT VÀ KHỞI CHẠY HỆ THỐNG
 
 ### Cách 1: Khởi Chạy Nhanh Bằng Docker (Khuyến nghị cho chấm bài & bàn giao)
 
