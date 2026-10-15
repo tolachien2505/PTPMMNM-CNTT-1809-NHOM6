@@ -1,0 +1,7 @@
+env.local.sh
+.env
+*.log
+*:Zone.Identifier
+.DS_Store
+runtime/
+evidence/private/
