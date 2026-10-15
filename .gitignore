@@ -1,0 +1,30 @@
+# Composer & Dependencies
+/vendor/
+composer.lock
+
+# Environment & Config
+.env
+.env.local
+
+# Storage & Uploads
+/storage/documents/*
+!/storage/documents/.gitkeep
+/storage/exports/*
+!/storage/exports/.gitkeep
+/storage/previews/*
+!/storage/previews/.gitkeep
+/storage/logs/*
+!/storage/logs/.gitkeep
+/public/uploads/*
+!/public/uploads/.gitkeep
+
+# SQLite database
+/database/*.sqlite
+/database/*.db
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
