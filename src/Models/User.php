@@ -11,6 +11,7 @@ class User
     public int $id;
     public string $username;
     public string $email;
+    public ?string $passwordHash = null;
     public string $fullName;
     public string $role; // 'admin', 'lecturer', 'student'
     public string $createdAt;

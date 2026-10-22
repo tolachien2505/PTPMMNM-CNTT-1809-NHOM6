@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username VARCHAR(50) NOT NULL UNIQUE,
     email VARCHAR(100) NOT NULL UNIQUE,
+    password_hash VARCHAR(255),
     full_name VARCHAR(100) NOT NULL,
     role VARCHAR(20) DEFAULT 'student', -- 'admin', 'lecturer', 'student'
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
