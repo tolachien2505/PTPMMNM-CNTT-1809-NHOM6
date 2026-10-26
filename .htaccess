@@ -1,0 +1,15 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # If already accessing public/, let public/.htaccess handle it
+    RewriteCond %{REQUEST_URI} ^.*/public/.*$
+    RewriteRule ^ - [L]
+
+    # If accessing root directory directly, redirect or rewrite to public/
+    RewriteRule ^$ public/ [L]
+
+    # For any other non-existent file or route, pass to public/
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>

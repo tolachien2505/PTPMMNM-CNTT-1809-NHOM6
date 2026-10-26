@@ -15,6 +15,11 @@ session_start();
 require_once __DIR__ . '/../vendor/autoload.php';
 
 use App\Controllers\AuthController;
+use App\Controllers\DocumentController;
+use App\Controllers\EditorController;
+use App\Controllers\ExportController;
+use App\Controllers\HistoryController;
+use App\Controllers\SettingController;
 use App\Services\PdfProcessorService;
 use App\Services\SecurityValidator;
 use App\Services\StorageService;
@@ -82,12 +87,45 @@ $currentUser = $isLoggedIn ? [
     'plan' => $_SESSION['user_plan'] ?? 'FREE'
 ] : null;
 
+$userPlan = $currentUser['plan'] ?? ($_SESSION['user_plan'] ?? 'FREE');
+
 $validator = new SecurityValidator();
 $storage = new StorageService();
 $processor = new PdfProcessorService($validator, $storage, $pdo);
 
+// Khởi tạo các Controllers chuyên biệt theo kiến trúc MVC chuẩn hóa
+$documentController = new DocumentController($validator, $storage, $pdo, __DIR__ . '/../storage/documents');
+$editorController = new EditorController($processor, $pdo);
+$exportController = new ExportController($processor, $pdo, __DIR__ . '/../storage/exports');
+$historyController = new HistoryController($pdo, __DIR__ . '/../storage/exports');
+$settingController = new SettingController($pdo);
+$effectiveUserId = (int)($_SESSION['user_id'] ?? 1);
+$currentSettings = $settingController->getSettingsData($effectiveUserId);
+
+// Xác định Base URL động (tương thích cả khi chạy qua Apache XAMPP dạng thư mục con hay qua php -S cổng 8000 trên Windows)
+$scriptName = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '');
+$scriptDir = str_replace('\\', '/', dirname($scriptName));
+$scriptDir = trim($scriptDir, '/');
+$baseUrl = ($scriptDir === '' || $scriptDir === '.' || basename($scriptName) === 'router.php') ? '' : '/' . $scriptDir;
+
+// Chuẩn hóa requestUri để loại bỏ tiền tố thư mục con (ví dụ: /PTPMMNM-CNTT-1809-NHOM6/public hoặc /PTPMMNM-CNTT-1809-NHOM6)
+$rawPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$requestUri = $rawPath;
+$possibleBases = array_unique(array_filter([
+    $baseUrl,
+    preg_replace('#/public$#', '', $baseUrl)
+]));
+foreach ($possibleBases as $b) {
+    if ($b !== '' && str_starts_with($requestUri, $b)) {
+        $requestUri = substr($requestUri, strlen($b));
+        break;
+    }
+}
+if ($requestUri === '' || $requestUri === false) {
+    $requestUri = '/';
+}
+
 // Clean URL routing without hash (#): /home, /documents, /editor, /upgrade, /history, /settings
-$requestUri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $cleanRoute = trim($requestUri, '/');
 if (in_array($cleanRoute, ['reorder', 'merge', 'split'])) {
     $cleanRoute = 'editor';
@@ -95,19 +133,10 @@ if (in_array($cleanRoute, ['reorder', 'merge', 'split'])) {
 $validRoutes = ['home', 'documents', 'editor', 'upgrade', 'history', 'settings'];
 $currentView = in_array($cleanRoute, $validRoutes) ? $cleanRoute : 'home';
 
-// Endpoint Tải xuống file xuất
+// Endpoint Tải xuống file xuất qua HistoryController
 if ($requestUri === '/api/download') {
     $filename = basename($_GET['file'] ?? '');
-    $filePath = __DIR__ . '/../storage/exports/' . $filename;
-    if ($filename && file_exists($filePath)) {
-        header('Content-Type: application/pdf');
-        header('Content-Disposition: attachment; filename="' . $filename . '"');
-        header('Content-Length: ' . filesize($filePath));
-        readfile($filePath);
-        exit;
-    }
-    http_response_code(404);
-    echo "Tệp không tồn tại hoặc đã hết hạn.";
+    $historyController->download($filename);
     exit;
 }
 
@@ -151,16 +180,10 @@ if (str_starts_with($requestUri, '/api/')) {
         exit;
     }
 
+    // --- Quản lý Tài liệu (DocumentController) ---
     if ($requestUri === '/api/documents') {
-        if ($pdo) {
-            $effectiveUserId = $_SESSION['user_id'] ?? 1;
-            $stmt = $pdo->prepare("SELECT * FROM documents WHERE user_id = ? ORDER BY id DESC");
-            $stmt->execute([$effectiveUserId]);
-            $docs = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } else {
-            $docs = [];
-        }
-        echo json_encode(['status' => 'success', 'data' => $docs]);
+        $effectiveUserId = $_SESSION['user_id'] ?? 1;
+        $documentController->index($effectiveUserId);
         exit;
     }
 
@@ -170,66 +193,26 @@ if (str_starts_with($requestUri, '/api/')) {
             echo json_encode(['status' => 'error', 'message' => 'Không tìm thấy tệp tải lên.']);
             exit;
         }
-
-        $file = $_FILES['file'];
-        try {
-            $validator->validateUpload($file);
-            $origName = basename($file['name']);
-            $storedName = 'doc_' . time() . '_' . $origName;
-            $destPath = __DIR__ . '/../storage/documents/' . $storedName;
-
-            move_uploaded_file($file['tmp_name'], $destPath);
-
-            $pageCount = 1;
-            try {
-                $f = new \setasign\Fpdi\Fpdi();
-                $pageCount = $f->setSourceFile($destPath);
-            } catch (Exception $e) {
-                $pageCount = 1;
-            }
-
-            if ($pdo) {
-                $effectiveUserId = $_SESSION['user_id'] ?? 1;
-                $stmt = $pdo->prepare("
-                    INSERT INTO documents (user_id, original_name, stored_filename, file_size, total_pages, status)
-                    VALUES (?, ?, ?, ?, ?, 'valid')
-                ");
-                $stmt->execute([$effectiveUserId, $origName, $storedName, $file['size'], $pageCount]);
-                $docId = $pdo->lastInsertId();
-            } else {
-                $docId = time();
-            }
-
-            echo json_encode([
-                'status' => 'success',
-                'message' => 'Tải lên tài liệu thành công!',
-                'document' => [
-                    'id' => $docId,
-                    'name' => $origName,
-                    'pages' => $pageCount,
-                    'size' => $file['size']
-                ]
-            ]);
-        } catch (Exception $e) {
-            http_response_code(400);
-            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
-        }
+        $effectiveUserId = $_SESSION['user_id'] ?? 1;
+        $documentController->upload($effectiveUserId, $_FILES['file']);
         exit;
     }
 
+    if ($requestUri === '/api/documents/delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $input = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $docId = (int)($input['id'] ?? 0);
+        $effectiveUserId = $_SESSION['user_id'] ?? 1;
+        $documentController->delete($effectiveUserId, $docId);
+        exit;
+    }
+
+    // --- Xử lý Xuất tài liệu (ExportController) ---
     if ($requestUri === '/api/export/merge' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $input = json_decode(file_get_contents('php://input'), true) ?? [];
         $plan = $input['plan'] ?? [];
         $title = $input['title'] ?? 'Tai_lieu_ghep.pdf';
-
-        try {
-            $effectiveUserId = $_SESSION['user_id'] ?? 1;
-            $result = $processor->mergePages($effectiveUserId, 1, $plan, $title);
-            echo json_encode($result);
-        } catch (Exception $e) {
-            http_response_code(400);
-            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
-        }
+        $effectiveUserId = $_SESSION['user_id'] ?? 1;
+        $exportController->merge($effectiveUserId, $plan, $title);
         exit;
     }
 
@@ -237,50 +220,52 @@ if (str_starts_with($requestUri, '/api/')) {
         $input = json_decode(file_get_contents('php://input'), true) ?? [];
         $groups = $input['groups'] ?? [];
         $sourceDoc = $input['source_doc'] ?? 'Tai_lieu_hoc_tap.pdf';
-
-        try {
-            $effectiveUserId = $_SESSION['user_id'] ?? 1;
-            $result = $processor->splitGroups($effectiveUserId, $groups, $sourceDoc);
-            echo json_encode($result);
-        } catch (Exception $e) {
-            http_response_code(400);
-            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
-        }
+        $effectiveUserId = $_SESSION['user_id'] ?? 1;
+        $exportController->split($effectiveUserId, $groups, $sourceDoc);
         exit;
     }
 
+    // --- Lịch sử xuất & Bảng đối chiếu nguồn (HistoryController) ---
     if ($requestUri === '/api/export/history') {
-        $history = [];
-        if ($pdo) {
-            $effectiveUserId = $_SESSION['user_id'] ?? 1;
-            $stmt = $pdo->prepare("SELECT * FROM outputs WHERE user_id = ? ORDER BY id DESC LIMIT 20");
-            $stmt->execute([$effectiveUserId]);
-            $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-        echo json_encode(['status' => 'success', 'history' => $history]);
+        $effectiveUserId = $_SESSION['user_id'] ?? 1;
+        $historyController->list($effectiveUserId);
+        exit;
+    }
+
+    if ($requestUri === '/api/export/delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $input = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $outputId = (int)($input['id'] ?? 0);
+        $effectiveUserId = $_SESSION['user_id'] ?? 1;
+        $historyController->delete($effectiveUserId, $outputId);
+        exit;
+    }
+
+    if ($requestUri === '/api/export/clear-all' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $effectiveUserId = $_SESSION['user_id'] ?? 1;
+        $historyController->clearAll($effectiveUserId);
         exit;
     }
 
     if ($requestUri === '/api/export/manifest') {
         $outputId = (int)($_GET['id'] ?? 0);
-        $manifest = [];
-        if ($pdo && $outputId > 0) {
-            $stmt = $pdo->prepare("SELECT filename, source_manifest, total_pages, created_at FROM outputs WHERE id = ?");
-            $stmt->execute([$outputId]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($row) {
-                $manifest = json_decode($row['source_manifest'], true);
-                echo json_encode([
-                    'status' => 'success',
-                    'filename' => $row['filename'],
-                    'total_pages' => $row['total_pages'],
-                    'created_at' => $row['created_at'],
-                    'manifest' => $manifest
-                ]);
-                exit;
-            }
-        }
-        echo json_encode(['status' => 'error', 'message' => 'Không tìm thấy dữ liệu đối chiếu']);
+        $historyController->manifest($outputId);
+        exit;
+    }
+
+    // --- Cài đặt Hệ thống (SettingController) ---
+    if ($requestUri === '/api/settings/get') {
+        $settingController->get();
+        exit;
+    }
+
+    if ($requestUri === '/api/settings/save' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $input = json_decode(file_get_contents('php://input'), true) ?: $_POST;
+        $settingController->save($input);
+        exit;
+    }
+
+    if ($requestUri === '/api/settings/reset' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $settingController->reset();
         exit;
     }
 
@@ -289,12 +274,35 @@ if (str_starts_with($requestUri, '/api/')) {
 }
 ?>
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="<?= htmlspecialchars($currentSettings['language'] ?? 'vi') ?>" <?= ($currentSettings['theme'] ?? '') === 'dark' ? 'data-theme="dark"' : '' ?> class="<?= ($currentSettings['density'] ?? '') === 'compact' ? 'density-compact' : '' ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF Manager v1.0 - Sắp xếp, Ghép, Tách & Xử lý PDF</title>
-    <link rel="stylesheet" href="/assets/css/style.css?v=<?= time() ?>">
+    <link rel="stylesheet" href="<?= $baseUrl ?>/assets/css/style.css?v=<?= time() ?>">
+    <script>
+        window.BASE_URL = <?= json_encode($baseUrl) ?>;
+        window.INITIAL_SETTINGS = <?= json_encode($currentSettings) ?>;
+        // Áp dụng ngay lập tức cấu hình giao diện đã lưu (tránh chớp sáng / trễ layout)
+        (function() {
+            try {
+                var s = JSON.parse(localStorage.getItem('pdf_manager_user_settings') || 'null') || window.INITIAL_SETTINGS || {};
+                if (s.theme === 'dark' || (s.theme === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                } else if (s.theme === 'light') {
+                    document.documentElement.removeAttribute('data-theme');
+                }
+                if (s.density === 'compact') {
+                    document.documentElement.classList.add('density-compact');
+                } else if (s.density === 'comfortable') {
+                    document.documentElement.classList.remove('density-compact');
+                }
+                if (s.language) {
+                    document.documentElement.setAttribute('lang', s.language);
+                }
+            } catch(e) {}
+        })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -305,7 +313,7 @@ if (str_starts_with($requestUri, '/api/')) {
     <div class="app-layout <?= $currentView === 'editor' ? 'sidebar-compact' : '' ?>" id="appLayout">
         <!-- Sidebar Navigation -->
         <aside class="sidebar <?= $currentView === 'editor' ? 'collapsed' : '' ?>" id="appSidebar">
-            <a href="/home" class="brand" onclick="switchView('home', event)" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 12px; cursor: pointer;">
+            <a href="<?= $baseUrl ?>/home" class="brand" onclick="switchView('home', event)" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 12px; cursor: pointer;">
                 <div class="brand-icon">
                     <svg class="svg-icon svg-icon-lg" viewBox="0 0 24 24">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -316,57 +324,57 @@ if (str_starts_with($requestUri, '/api/')) {
                 </div>
                 <div class="brand-info">
                     <h1 class="brand-title">PDF Manager <span class="badge">v1.0</span></h1>
-                    <p class="brand-sub">Sắp xếp - Ghép - Tách - Xử lý PDF</p>
+                    <p class="brand-sub" data-i18n="brand.sub">Sắp xếp - Ghép - Tách - Xử lý PDF</p>
                 </div>
             </a>
 
             <nav class="nav-menu">
-                <a href="/home" class="nav-item <?= $currentView === 'home' ? 'active' : '' ?>" data-view="home" title="Trang chủ">
+                <a href="<?= $baseUrl ?>/home" class="nav-item <?= $currentView === 'home' ? 'active' : '' ?>" data-view="home" title="Trang chủ">
                     <span class="nav-icon">
                         <svg class="svg-icon" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
                     </span>
-                    <span>Trang chủ</span>
+                    <span data-i18n="nav.home">Trang chủ</span>
                 </a>
-                <a href="/documents" class="nav-item <?= $currentView === 'documents' ? 'active' : '' ?>" data-view="documents" title="Quản lý tài liệu">
+                <a href="<?= $baseUrl ?>/documents" class="nav-item <?= $currentView === 'documents' ? 'active' : '' ?>" data-view="documents" title="Quản lý tài liệu">
                     <span class="nav-icon">
                         <svg class="svg-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                     </span>
-                    <span>Quản lý tài liệu</span>
+                    <span data-i18n="nav.documents">Quản lý tài liệu</span>
                 </a>
-                <a href="/editor" class="nav-item <?= $currentView === 'editor' ? 'active' : '' ?>" data-view="editor" title="Chỉnh sửa PDF">
+                <a href="<?= $baseUrl ?>/editor" class="nav-item <?= $currentView === 'editor' ? 'active' : '' ?>" data-view="editor" title="Chỉnh sửa PDF">
                     <span class="nav-icon">
                         <svg class="svg-icon" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </span>
-                    <span>Chỉnh sửa PDF</span>
+                    <span data-i18n="nav.editor">Chỉnh sửa PDF</span>
                 </a>
-                <a href="/upgrade" class="nav-item <?= $currentView === 'upgrade' ? 'active' : '' ?>" data-view="upgrade" title="Nâng Cấp Gói">
+                <a href="<?= $baseUrl ?>/upgrade" class="nav-item <?= $currentView === 'upgrade' ? 'active' : '' ?>" data-view="upgrade" title="Nâng Cấp Gói">
                     <span class="nav-icon">
                         <svg class="svg-icon" style="color: #F59E0B;" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
                     </span>
-                    <span style="font-weight: 600; color: #D97706;">Nâng Cấp</span>
+                    <span style="font-weight: 600; color: #D97706;" data-i18n="nav.upgrade">Nâng Cấp</span>
                 </a>
-                <a href="/history" class="nav-item <?= $currentView === 'history' ? 'active' : '' ?>" data-view="history" title="Lịch sử xuất">
+                <a href="<?= $baseUrl ?>/history" class="nav-item <?= $currentView === 'history' ? 'active' : '' ?>" data-view="history" title="Lịch sử xuất">
                     <span class="nav-icon">
                         <svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                     </span>
-                    <span>Lịch sử xuất</span>
+                    <span data-i18n="nav.history">Lịch sử xuất</span>
                 </a>
-                <a href="/settings" class="nav-item <?= $currentView === 'settings' ? 'active' : '' ?>" data-view="settings" title="Cài đặt">
+                <a href="<?= $baseUrl ?>/settings" class="nav-item <?= $currentView === 'settings' ? 'active' : '' ?>" data-view="settings" title="Cài đặt">
                     <span class="nav-icon">
                         <svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                     </span>
-                    <span>Cài đặt</span>
+                    <span data-i18n="nav.settings">Cài đặt</span>
                 </a>
             </nav>
 
             <div class="sidebar-footer">
                 <div class="storage-info">
                     <div class="storage-label">
-                        <span>Dung lượng lưu trữ</span>
+                        <span data-i18n="nav.storage">Dung lượng lưu trữ</span>
                         <span id="storageUsageText"><?= ($_SESSION['user_plan'] ?? 'FREE') === 'PRO' ? '125 MB / Không giới hạn' : '125 MB / 1 GB' ?></span>
                     </div>
                     <div class="progress-bar"><div class="progress-fill" id="storageProgressBar" style="width: <?= ($_SESSION['user_plan'] ?? 'FREE') === 'PRO' ? '8%' : '12.5%' ?>;"></div></div>
-                    <a href="/upgrade" class="storage-upgrade" onclick="switchView('upgrade', event)"><?= ($_SESSION['user_plan'] ?? 'FREE') === 'PRO' ? 'Đã lên PRO' : 'Nâng cấp' ?></a>
+                    <a href="<?= $baseUrl ?>/upgrade" class="storage-upgrade" onclick="switchView('upgrade', event)" data-i18n="nav.upgrade_btn"><?= ($_SESSION['user_plan'] ?? 'FREE') === 'PRO' ? 'Đã lên PRO' : 'Nâng cấp' ?></a>
                 </div>
                 <?php if ($isLoggedIn && $currentUser): ?>
                 <div class="user-profile" onclick="toggleUserDropdown(event)" style="cursor: pointer;" title="Tài khoản & Gói hội viên">
@@ -390,11 +398,11 @@ if (str_starts_with($requestUri, '/api/')) {
                             <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24" style="stroke: #fff;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                         </div>
                         <div class="user-meta">
-                            <div class="user-name" style="color: #475569; font-size: 0.82rem;">Khách vãng lai</div>
-                            <div class="user-role"><span class="badge" style="background: #F1F5F9; color: #64748B; font-size: 0.68rem;">Chưa đăng nhập</span></div>
+                            <div class="user-name" style="color: #475569; font-size: 0.82rem;" data-i18n="nav.guest">Khách vãng lai</div>
+                            <div class="user-role"><span class="badge" style="background: #F1F5F9; color: #64748B; font-size: 0.68rem;" data-i18n="nav.guest_status">Chưa đăng nhập</span></div>
                         </div>
                     </div>
-                    <button type="button" class="btn-guest-login-sm" onclick="openAuthModal('login'); event.stopPropagation();">Đăng nhập</button>
+                    <button type="button" class="btn-guest-login-sm" onclick="openAuthModal('login'); event.stopPropagation();" data-i18n="nav.guest_login">Đăng nhập</button>
                 </div>
                 <?php endif; ?>
             </div>
@@ -415,7 +423,7 @@ if (str_starts_with($requestUri, '/api/')) {
                         <span class="search-icon">
                             <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                         </span>
-                        <input type="text" id="globalSearch" placeholder="Tìm kiếm tài liệu, tệp...">
+                        <input type="text" id="globalSearch" placeholder="Tìm kiếm tài liệu, tệp..." data-i18n-placeholder="topbar.search_placeholder">
                     </div>
                 </div>
                 <div class="topbar-actions">
@@ -448,10 +456,10 @@ if (str_starts_with($requestUri, '/api/')) {
                             <!-- Thẻ gói dịch vụ SaaS -->
                             <div class="user-dd-plan-card" id="userDdPlanCard">
                                 <div class="plan-card-info">
-                                    <div class="plan-card-title">Gói dịch vụ: <strong id="ddPlanText"><?= htmlspecialchars($currentUser['plan'] ?? 'FREE') ?></strong></div>
-                                    <div class="plan-card-sub" id="ddPlanSub"><?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'Mở khóa toàn bộ tính năng cao cấp' : 'Dung lượng 1GB • Ghép tách tiêu chuẩn' ?></div>
+                                    <div class="plan-card-title"><span data-i18n="topbar.plan_label">Gói dịch vụ:</span> <strong id="ddPlanText"><?= htmlspecialchars($currentUser['plan'] ?? 'FREE') ?></strong></div>
+                                    <div class="plan-card-sub" id="ddPlanSub" data-i18n="<?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'topbar.plan_pro_unlock' : 'topbar.plan_free_limit' ?>"><?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'Mở khóa toàn bộ tính năng cao cấp' : 'Dung lượng 1GB • Ghép tách tiêu chuẩn' ?></div>
                                 </div>
-                                <button type="button" class="btn-plan-action" onclick="switchView('upgrade'); closeUserDropdown();" id="btnDdPlanUpgrade">
+                                <button type="button" class="btn-plan-action" onclick="switchView('upgrade'); closeUserDropdown();" id="btnDdPlanUpgrade" data-i18n="<?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'topbar.plan_btn_pro' : 'topbar.plan_btn_upgrade' ?>">
                                     <?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'Chi tiết gói' : 'Nâng cấp PRO' ?>
                                 </button>
                             </div>
@@ -461,26 +469,26 @@ if (str_starts_with($requestUri, '/api/')) {
                             <!-- Menu chức năng thật -->
                             <button type="button" class="user-dd-item" onclick="openAccountModal()">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                                <span>Thông tin tài khoản</span>
+                                <span data-i18n="topbar.menu_account">Thông tin tài khoản</span>
                             </button>
                             <button type="button" class="user-dd-item" onclick="switchView('upgrade'); closeUserDropdown();">
                                 <svg class="svg-icon svg-icon-sm text-warning" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-                                <span>Nâng cấp Gói dịch vụ</span>
+                                <span data-i18n="topbar.menu_upgrade">Nâng cấp Gói dịch vụ</span>
                             </button>
                             <button type="button" class="user-dd-item" onclick="switchView('settings')">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                                <span>Cài đặt hệ thống</span>
+                                <span data-i18n="topbar.menu_settings">Cài đặt hệ thống</span>
                             </button>
                             <button type="button" class="user-dd-item" onclick="switchView('history')">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                                <span>Lịch sử xuất tệp</span>
+                                <span data-i18n="topbar.menu_history">Lịch sử xuất tệp</span>
                             </button>
 
                             <div class="user-dd-divider"></div>
 
                             <button type="button" class="user-dd-item text-danger" onclick="logoutUser()">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                                <span>Đăng xuất</span>
+                                <span data-i18n="topbar.menu_logout">Đăng xuất</span>
                             </button>
                         </div>
                     </div>
@@ -488,10 +496,10 @@ if (str_starts_with($requestUri, '/api/')) {
                     <div class="guest-topbar-actions">
                         <button type="button" class="btn-guest-login" onclick="openAuthModal('login')">
                             <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-                            <span>Đăng nhập</span>
+                            <span data-i18n="nav.guest_login">Đăng nhập</span>
                         </button>
                         <button type="button" class="btn-guest-register" onclick="openAuthModal('register')">
-                            <span>Đăng ký</span>
+                            <span data-i18n="nav.guest_register">Đăng ký</span>
                         </button>
                     </div>
                     <?php endif; ?>
@@ -505,20 +513,20 @@ if (str_starts_with($requestUri, '/api/')) {
                     <!-- Hero Banner -->
                     <section class="hero-banner">
                         <div class="hero-text">
-                            <h2>Xử lý PDF nhanh chóng,<br>linh hoạt và dễ dàng</h2>
-                            <p>Ghép, tách, sắp xếp, xoay và chỉnh sửa tài liệu PDF chỉ với vài thao tác đơn giản.</p>
+                            <h2 data-i18n-html="home.hero_title">Xử lý PDF nhanh chóng,<br>linh hoạt và dễ dàng</h2>
+                            <p data-i18n="home.hero_desc">Ghép, tách, sắp xếp, xoay và chỉnh sửa tài liệu PDF chỉ với vài thao tác đơn giản.</p>
                             <div class="feature-badges">
                                 <span class="feature-badge-item">
                                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-                                    An toàn (Bảo mật dữ liệu)
+                                    <span data-i18n="home.badge_secure">An toàn (Bảo mật dữ liệu)</span>
                                 </span>
                                 <span class="feature-badge-item">
                                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                                    Nhanh chóng (Xử lý trong vài giây)
+                                    <span data-i18n="home.badge_fast">Nhanh chóng (Xử lý trong vài giây)</span>
                                 </span>
                                 <span class="feature-badge-item">
                                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                                    Dễ sử dụng (Giao diện trực quan)
+                                    <span data-i18n="home.badge_easy">Dễ sử dụng (Giao diện trực quan)</span>
                                 </span>
                             </div>
                         </div>
@@ -538,14 +546,14 @@ if (str_starts_with($requestUri, '/api/')) {
                     <!-- Quick Actions 2x2 Grid (Khớp 100% hình mẫu giaodien_demo.png) -->
                     <section class="quick-actions-2x2">
                         <!-- Card 1: Chỉnh sửa PDF chuyên nghiệp -->
-                        <a href="/editor" class="action-card" onclick="switchView('editor', event)">
+                        <a href="<?= $baseUrl ?>/editor" class="action-card" onclick="switchView('editor', event)">
                             <div class="action-main">
                                 <div class="action-icon-box blue">
                                     <svg class="svg-icon" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                                 </div>
                                 <div class="action-details">
-                                    <h3>Chỉnh sửa PDF</h3>
-                                    <p>Thêm chữ, vẽ, ký số, con dấu & ghi chú</p>
+                                    <h3 data-i18n="home.qa_editor_title">Chỉnh sửa PDF</h3>
+                                    <p data-i18n="home.qa_editor_desc">Thêm chữ, vẽ, ký số, con dấu & ghi chú</p>
                                 </div>
                             </div>
                             <span class="action-arrow">
@@ -554,14 +562,14 @@ if (str_starts_with($requestUri, '/api/')) {
                         </a>
 
                         <!-- Card 2: Quản lý & Sắp xếp trang -->
-                        <a href="/editor" class="action-card" onclick="switchView('editor', event); setTimeout(openPageManagerModal, 200);">
+                        <a href="<?= $baseUrl ?>/editor" class="action-card" onclick="switchView('editor', event); setTimeout(openPageManagerModal, 200);">
                             <div class="action-main">
                                 <div class="action-icon-box green">
                                     <svg class="svg-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
                                 </div>
                                 <div class="action-details">
-                                    <h3>Quản lý trang PDF</h3>
-                                    <p>Sắp xếp, xoay góc, nhân bản & xóa trang</p>
+                                    <h3 data-i18n="home.qa_pages_title">Quản lý trang PDF</h3>
+                                    <p data-i18n="home.qa_pages_desc">Sắp xếp, xoay góc, nhân bản & xóa trang</p>
                                 </div>
                             </div>
                             <span class="action-arrow">
@@ -570,14 +578,14 @@ if (str_starts_with($requestUri, '/api/')) {
                         </a>
 
                         <!-- Card 3: Ghép & Tách tài liệu -->
-                        <a href="/editor" class="action-card" onclick="switchView('editor', event); setTimeout(openPageManagerModal, 200);">
+                        <a href="<?= $baseUrl ?>/editor" class="action-card" onclick="switchView('editor', event); setTimeout(openPageManagerModal, 200);">
                             <div class="action-main">
                                 <div class="action-icon-box purple">
                                     <svg class="svg-icon" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                                 </div>
                                 <div class="action-details">
-                                    <h3>Ghép & Tách tài liệu</h3>
-                                    <p>Nhập file ghép nối hoặc trích xuất nhóm trang</p>
+                                    <h3 data-i18n="home.qa_merge_title">Ghép & Tách tài liệu</h3>
+                                    <p data-i18n="home.qa_merge_desc">Nhập file ghép nối hoặc trích xuất nhóm trang</p>
                                 </div>
                             </div>
                             <span class="action-arrow">
@@ -586,14 +594,14 @@ if (str_starts_with($requestUri, '/api/')) {
                         </a>
 
                         <!-- Card 4: Nâng cấp gói PRO -->
-                        <a href="/upgrade" class="action-card" onclick="switchView('upgrade', event)">
+                        <a href="<?= $baseUrl ?>/upgrade" class="action-card" onclick="switchView('upgrade', event)">
                             <div class="action-main">
                                 <div class="action-icon-box orange">
                                     <svg class="svg-icon" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
                                 </div>
                                 <div class="action-details">
-                                    <h3>Nâng cấp gói PRO</h3>
-                                    <p>Dung lượng không giới hạn & công cụ VIP</p>
+                                    <h3 data-i18n="home.qa_pro_title">Nâng cấp gói PRO</h3>
+                                    <p data-i18n="home.qa_pro_desc">Dung lượng không giới hạn & công cụ VIP</p>
                                 </div>
                             </div>
                             <span class="action-arrow">
@@ -610,13 +618,13 @@ if (str_starts_with($requestUri, '/api/')) {
                         <!-- Toolbar & Tabs -->
                         <div class="section-toolbar">
                             <div class="tabs-group">
-                                <button class="tab-btn active" id="tabDocList" onclick="toggleDocTab('list')">Danh sách tài liệu</button>
-                                <button class="tab-btn" id="tabProcessing" onclick="toggleDocTab('processing')">Đang xử lý (2)</button>
+                                <button class="tab-btn active" id="tabDocList" onclick="toggleDocTab('list')" data-i18n="home.tab_doc_list">Danh sách tài liệu</button>
+                                <button class="tab-btn" id="tabProcessing" onclick="toggleDocTab('processing')" data-i18n="home.tab_processing">Đang xử lý (2)</button>
                             </div>
                             <div class="toolbar-actions">
                                 <button class="btn-primary" onclick="openUploadModal()">
                                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                                    <span>Tải lên tệp PDF</span>
+                                    <span data-i18n="home.btn_upload">Tải lên tệp PDF</span>
                                 </button>
                                 <button class="btn-outline" onclick="showToast('Tùy chọn hiển thị nâng cao', 'info')" title="Tùy chọn">
                                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
@@ -639,7 +647,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                 </div>
                                 <div class="doc-name" title="Tai_lieu_hoc_tap.pdf">Tai_lieu_hoc_tap.pdf</div>
                                 <div class="doc-info">8 trang • 2.1 MB</div>
-                                <span class="status-pill success"><span class="status-dot"></span> Hoàn tất</span>
+                                <span class="status-pill success"><span class="status-dot"></span> <span data-i18n="home.status_completed">Hoàn tất</span></span>
                             </div>
 
                             <!-- Card 2 -->
@@ -654,7 +662,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                 </div>
                                 <div class="doc-name" title="De_cuong_mon_hoc.pdf">De_cuong_mon_hoc.pdf</div>
                                 <div class="doc-info">24 trang • 4.8 MB</div>
-                                <span class="status-pill success"><span class="status-dot"></span> Hoàn tất</span>
+                                <span class="status-pill success"><span class="status-dot"></span> <span data-i18n="home.status_completed">Hoàn tất</span></span>
                             </div>
 
                             <!-- Card 3 -->
@@ -669,7 +677,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                 </div>
                                 <div class="doc-name" title="Bai_giang_Tin_hoc.pdf">Bai_giang_Tin_hoc.pdf</div>
                                 <div class="doc-info">18 trang • 3.1 MB</div>
-                                <span class="status-pill success"><span class="status-dot"></span> Hoàn tất</span>
+                                <span class="status-pill success"><span class="status-dot"></span> <span data-i18n="home.status_completed">Hoàn tất</span></span>
                             </div>
 
                             <!-- Card 4 -->
@@ -683,7 +691,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                 </div>
                                 <div class="doc-name" title="Ho_so_tot_nghiep.pdf">Ho_so_tot_nghiep.pdf</div>
                                 <div class="doc-info">12 trang • 2.4 MB</div>
-                                <span class="status-pill info"><span class="status-dot"></span> Đã xử lý</span>
+                                <span class="status-pill info"><span class="status-dot"></span> <span data-i18n="home.status_processed">Đã xử lý</span></span>
                             </div>
 
                             <!-- Card 5 (File rỗng/Lỗi) -->
@@ -695,7 +703,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                 </div>
                                 <div class="doc-name" title="File_rong.pdf">File_rong.pdf</div>
                                 <div class="doc-info">0 trang • 0 KB</div>
-                                <span class="status-pill danger"><span class="status-dot"></span> Lỗi</span>
+                                <span class="status-pill danger"><span class="status-dot"></span> <span data-i18n="home.status_error">Lỗi</span></span>
                             </div>
 
                             <!-- Card 6 -->
@@ -709,27 +717,27 @@ if (str_starts_with($requestUri, '/api/')) {
                                 </div>
                                 <div class="doc-name" title="Tai_lieu_tham_khao.pdf">Tai_lieu_tham_khao.pdf</div>
                                 <div class="doc-info">15 trang • 2.7 MB</div>
-                                <span class="status-pill success"><span class="status-dot"></span> Hoàn tất</span>
+                                <span class="status-pill success"><span class="status-dot"></span> <span data-i18n="home.status_completed">Hoàn tất</span></span>
                             </div>
                         </div>
 
                         <!-- Recent Documents Table -->
                         <div class="table-section">
                             <div class="table-header">
-                                <h3 class="table-title">Tài liệu gần đây</h3>
-                                <a href="javascript:void(0)" class="storage-upgrade" style="margin: 0;" onclick="showToast('Xem danh mục đầy đủ tất cả tài liệu', 'info')">Xem tất cả →</a>
+                                <h3 class="table-title" data-i18n="home.recent_title">Tài liệu gần đây</h3>
+                                <a href="javascript:void(0)" class="storage-upgrade" style="margin: 0;" onclick="showToast('Xem danh mục đầy đủ tất cả tài liệu', 'info')" data-i18n="home.recent_view_all">Xem tất cả →</a>
                             </div>
                             <div class="table-responsive">
                             <table class="custom-table">
                                 <thead>
                                     <tr>
                                         <th width="32"><input type="checkbox" id="checkAllDocs"></th>
-                                        <th>Tên tệp</th>
-                                        <th>Số trang</th>
-                                        <th>Dung lượng</th>
-                                        <th>Ngày tạo</th>
-                                        <th>Trạng thái</th>
-                                        <th>Thao tác</th>
+                                        <th data-i18n="home.th_filename">Tên tệp</th>
+                                        <th data-i18n="home.th_pages">Số trang</th>
+                                        <th data-i18n="home.th_size">Dung lượng</th>
+                                        <th data-i18n="home.th_created">Ngày tạo</th>
+                                        <th data-i18n="home.th_status">Trạng thái</th>
+                                        <th data-i18n="home.th_actions">Thao tác</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -744,7 +752,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                         <td>12</td>
                                         <td>2.4 MB</td>
                                         <td>02/10/2025 14:32</td>
-                                        <td><span class="status-pill info"><span class="status-dot"></span> Đã xử lý</span></td>
+                                        <td><span class="status-pill info"><span class="status-dot"></span> <span data-i18n="home.status_processed">Đã xử lý</span></span></td>
                                         <td>
                                             <div class="actions-cell">
                                                 <button class="btn-table-action" title="Xem nhanh" onclick="showToast('Xem trước: Ho_so_tot_nghiep.pdf', 'info')">
@@ -767,7 +775,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                         <td>18</td>
                                         <td>3.1 MB</td>
                                         <td>01/10/2025 16:20</td>
-                                        <td><span class="status-pill info"><span class="status-dot"></span> Đang xử lý</span></td>
+                                        <td><span class="status-pill info"><span class="status-dot"></span> <span data-i18n="home.status_processing">Đang xử lý</span></span></td>
                                         <td>
                                             <div class="actions-cell">
                                                 <button class="btn-table-action" title="Xem nhanh" onclick="showToast('Xem trước: Bai_giang_Tin_hoc.pdf', 'info')">
@@ -790,7 +798,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                         <td>8</td>
                                         <td>1.2 MB</td>
                                         <td>29/09/2025 10:05</td>
-                                        <td><span class="status-pill success"><span class="status-dot"></span> Hoàn tất</span></td>
+                                        <td><span class="status-pill success"><span class="status-dot"></span> <span data-i18n="home.status_completed">Hoàn tất</span></span></td>
                                         <td>
                                             <div class="actions-cell">
                                                 <button class="btn-table-action" title="Xem nhanh" onclick="showToast('Xem trước: Tai_lieu_tham_khao.pdf', 'info')">
@@ -813,7 +821,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                         <td>24</td>
                                         <td>4.8 MB</td>
                                         <td>28/09/2025 09:17</td>
-                                        <td><span class="status-pill success"><span class="status-dot"></span> Hoàn tất</span></td>
+                                        <td><span class="status-pill success"><span class="status-dot"></span> <span data-i18n="home.status_completed">Hoàn tất</span></span></td>
                                         <td>
                                             <div class="actions-cell">
                                                 <button class="btn-table-action" title="Xem nhanh" onclick="showToast('Xem trước: De_cuong_mon_hoc.pdf', 'info')">
@@ -836,7 +844,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                         <td>15</td>
                                         <td>2.7 MB</td>
                                         <td>27/09/2025 20:41</td>
-                                        <td><span class="status-pill success"><span class="status-dot"></span> Hoàn tất</span></td>
+                                        <td><span class="status-pill success"><span class="status-dot"></span> <span data-i18n="home.status_completed">Hoàn tất</span></span></td>
                                         <td>
                                             <div class="actions-cell">
                                                 <button class="btn-table-action" title="Xem nhanh" onclick="showToast('Xem trước: Tai_lieu_hoc_tap.pdf', 'info')">
@@ -853,14 +861,14 @@ if (str_starts_with($requestUri, '/api/')) {
                             </div>
 
                             <div class="table-footer">
-                                <div>Hiển thị 1 - 5 / 6 tài liệu</div>
+                                <div data-i18n="home.table_showing">Hiển thị 1 - 5 / 6 tài liệu</div>
                                 <div class="pagination-controls">
                                     <button class="page-btn">‹</button>
                                     <button class="page-btn active">1</button>
                                     <button class="page-btn">2</button>
                                     <button class="page-btn">›</button>
                                 </div>
-                                <div>10 / trang</div>
+                                <div data-i18n="home.table_per_page">10 / trang</div>
                             </div>
                         </div>
                     </div>
@@ -869,72 +877,72 @@ if (str_starts_with($requestUri, '/api/')) {
                     <div class="dashboard-side-col">
                         <!-- Quick Stats 2x2 with Solid Color SVG Boxes -->
                         <div class="side-card">
-                            <h4 class="side-card-title">Thống kê nhanh</h4>
+                            <h4 class="side-card-title" data-i18n="home.stats_title">Thống kê nhanh</h4>
                             <div class="stats-grid">
                                 <div class="stat-item">
                                     <div class="stat-icon-sq blue">
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                                     </div>
                                     <div class="stat-number">6</div>
-                                    <div class="stat-label">Tổng số tài liệu</div>
+                                    <div class="stat-label" data-i18n="home.stat_total_docs">Tổng số tài liệu</div>
                                 </div>
                                 <div class="stat-item">
                                     <div class="stat-icon-sq green">
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
                                     </div>
                                     <div class="stat-number">40</div>
-                                    <div class="stat-label">Tổng số trang</div>
+                                    <div class="stat-label" data-i18n="home.stat_total_pages">Tổng số trang</div>
                                 </div>
                                 <div class="stat-item">
                                     <div class="stat-icon-sq purple">
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                                     </div>
                                     <div class="stat-number">5</div>
-                                    <div class="stat-label">Đã xử lý</div>
+                                    <div class="stat-label" data-i18n="home.stat_processed">Đã xử lý</div>
                                 </div>
                                 <div class="stat-item">
                                     <div class="stat-icon-sq red">
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                                     </div>
                                     <div class="stat-number">1</div>
-                                    <div class="stat-label">Lỗi</div>
+                                    <div class="stat-label" data-i18n="home.stat_errors">Lỗi</div>
                                 </div>
                             </div>
                         </div>
 
                         <!-- Guide List -->
                         <div class="side-card">
-                            <h4 class="side-card-title">Hướng dẫn sử dụng</h4>
+                            <h4 class="side-card-title" data-i18n="home.guide_title">Hướng dẫn sử dụng</h4>
                             <ul class="guide-list">
                                 <li class="guide-step">
                                     <span class="step-num">1</span>
-                                    <span>Tải lên nhiều tệp PDF</span>
+                                    <span data-i18n="home.guide_step1">Tải lên nhiều tệp PDF</span>
                                 </li>
                                 <li class="guide-step">
                                     <span class="step-num">2</span>
-                                    <span>Chọn, sắp xếp, xoay trang</span>
+                                    <span data-i18n="home.guide_step2">Chọn, sắp xếp, xoay trang</span>
                                 </li>
                                 <li class="guide-step">
                                     <span class="step-num">3</span>
-                                    <span>Xem trước và kiểm tra kế hoạch</span>
+                                    <span data-i18n="home.guide_step3">Xem trước và kiểm tra kế hoạch</span>
                                 </li>
                                 <li class="guide-step">
                                     <span class="step-num">4</span>
-                                    <span>Ghép hoặc tách tài liệu</span>
+                                    <span data-i18n="home.guide_step4">Ghép hoặc tách tài liệu</span>
                                 </li>
                                 <li class="guide-step">
                                     <span class="step-num">5</span>
-                                    <span>Tải xuống kết quả</span>
+                                    <span data-i18n="home.guide_step5">Tải xuống kết quả</span>
                                 </li>
                             </ul>
                         </div>
 
                         <!-- Promo Card -->
                         <div class="promo-card">
-                            <h4>Làm việc hiệu quả hơn<br>với PDF Manager</h4>
-                            <p>Tối ưu hóa tài liệu học tập và hồ sơ tốt nghiệp dễ dàng.</p>
+                            <h4 data-i18n-html="home.promo_title">Làm việc hiệu quả hơn<br>với PDF Manager</h4>
+                            <p data-i18n="home.promo_desc">Tối ưu hóa tài liệu học tập và hồ sơ tốt nghiệp dễ dàng.</p>
                             <button class="btn-promo" onclick="switchView('reorder')">
-                                <span>Xem chi tiết</span>
+                                <span data-i18n="home.promo_btn">Xem chi tiết</span>
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
                             </button>
                             <svg class="promo-folder-svg" viewBox="0 0 100 80" fill="none">
@@ -966,8 +974,8 @@ if (str_starts_with($requestUri, '/api/')) {
                                     <polyline points="9 15 12 12 15 15"/>
                                 </svg>
                             </div>
-                            <h2 class="upload-state-title">Chỉnh sửa tệp PDF trực tuyến chuyên nghiệp</h2>
-                            <p class="upload-state-subtitle">Thêm văn bản, vẽ tự do, ký số điện tử, đóng dấu phê duyệt và sắp xếp trang toàn diện</p>
+                            <h2 class="upload-state-title" data-i18n="editor.upload_hero_title">Chỉnh sửa tệp PDF trực tuyến chuyên nghiệp</h2>
+                            <p class="upload-state-subtitle" data-i18n="editor.upload_hero_subtitle">Thêm văn bản, vẽ tự do, ký số điện tử, đóng dấu phê duyệt và sắp xếp trang toàn diện</p>
                         </div>
 
                         <!-- Dropzone chính -->
@@ -979,21 +987,21 @@ if (str_starts_with($requestUri, '/api/')) {
                                     <path d="m8 16 4-4 4 4"/>
                                 </svg>
                             </div>
-                            <div class="dropzone-title">Kéo & Thả tệp PDF của bạn vào đây</div>
-                            <div class="dropzone-sub">hoặc bấm vào khung để duyệt tệp từ máy tính</div>
+                            <div class="dropzone-title" data-i18n="editor.dropzone_title">Kéo & Thả tệp PDF của bạn vào đây</div>
+                            <div class="dropzone-sub" data-i18n="editor.dropzone_sub">hoặc bấm vào khung để duyệt tệp từ máy tính</div>
                             <button type="button" class="btn-primary btn-upload-hero" onclick="event.stopPropagation(); document.getElementById('editorHeroFileInput').click();">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                                <span>Chọn tệp PDF tải lên</span>
+                                <span data-i18n="editor.btn_upload_hero">Chọn tệp PDF tải lên</span>
                             </button>
                             <input type="file" id="editorHeroFileInput" accept="application/pdf" style="display: none;" onchange="handleHeroFileInput(event)">
-                            <div class="dropzone-limits">Hỗ trợ PDF tối đa 50 MB • Xử lý bảo mật an toàn 100%</div>
+                            <div class="dropzone-limits" data-i18n="editor.dropzone_limits">Hỗ trợ PDF tối đa 50 MB • Xử lý bảo mật an toàn 100%</div>
                         </div>
 
                         <!-- Quick Samples Grid -->
                         <div class="upload-sample-section">
                             <div class="sample-section-header">
                                 <span class="sample-section-line"></span>
-                                <span class="sample-section-text">HOẶC CHỌN TÀI LIỆU CÓ SẴN ĐỂ CHỈNH SỬA NGAY</span>
+                                <span class="sample-section-text" data-i18n="editor.sample_divider">HOẶC CHỌN TÀI LIỆU CÓ SẴN ĐỂ CHỈNH SỬA NGAY</span>
                                 <span class="sample-section-line"></span>
                             </div>
 
@@ -1004,7 +1012,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                     </div>
                                     <div class="sample-card-info">
                                         <div class="sample-name">Tai_lieu_hoc_tap.pdf</div>
-                                        <div class="sample-meta">11 trang • Báo cáo nghiên cứu</div>
+                                        <div class="sample-meta" data-i18n="editor.sample1_meta">11 trang • Báo cáo nghiên cứu</div>
                                     </div>
                                     <span class="sample-arrow">→</span>
                                 </div>
@@ -1015,7 +1023,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                     </div>
                                     <div class="sample-card-info">
                                         <div class="sample-name">De_cuong_mon_hoc.pdf</div>
-                                        <div class="sample-meta">6 trang • Đề cương học phần</div>
+                                        <div class="sample-meta" data-i18n="editor.sample2_meta">6 trang • Đề cương học phần</div>
                                     </div>
                                     <span class="sample-arrow">→</span>
                                 </div>
@@ -1026,7 +1034,7 @@ if (str_starts_with($requestUri, '/api/')) {
                                     </div>
                                     <div class="sample-card-info">
                                         <div class="sample-name">Do_an_tot_nghiep_mau.pdf</div>
-                                        <div class="sample-meta">15 trang • Luận văn đồ án</div>
+                                        <div class="sample-meta" data-i18n="editor.sample3_meta">15 trang • Luận văn đồ án</div>
                                     </div>
                                     <span class="sample-arrow">→</span>
                                 </div>
@@ -1054,71 +1062,71 @@ if (str_starts_with($requestUri, '/api/')) {
                         <div class="editor-ribbon-group tools-group">
                             <button class="ribbon-tool-btn active" data-tool="add-text" onclick="setEditorTool('add-text')" title="Thêm văn bản mới">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
-                                <span>Thêm văn bản</span>
+                                <span data-i18n="editor.tool_add_text">Thêm văn bản</span>
                             </button>
                             <button class="ribbon-tool-btn" data-tool="edit-text" onclick="setEditorTool('edit-text')" title="Chỉnh sửa văn bản có sẵn trong PDF">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                                <span>Chỉnh sửa văn bản</span>
+                                <span data-i18n="editor.tool_edit_text">Chỉnh sửa văn bản</span>
                             </button>
                             <button class="ribbon-tool-btn" data-tool="signature" onclick="openSignatureModal()" title="Tạo hoặc chèn chữ ký">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="m20.5 14.5-8-8-5 5 8 8Z"/><path d="M7.5 11.5 2 17v5h5l5.5-5.5"/><circle cx="17.5" cy="6.5" r="2.5"/></svg>
-                                <span>Ký tên</span>
+                                <span data-i18n="editor.tool_sign">Ký tên</span>
                             </button>
                             <button class="ribbon-tool-btn" data-tool="draw" onclick="setEditorTool('draw')" title="Vẽ tự do nét mực">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
-                                <span>Vẽ</span>
+                                <span data-i18n="editor.tool_draw">Vẽ</span>
                             </button>
                             
                             <!-- Shapes Dropdown Menu -->
                             <div class="ribbon-dropdown-wrapper">
                                 <button class="ribbon-tool-btn dropdown-toggle" id="btnShapesDropdown" onclick="toggleShapesDropdown(event)" title="Đường thẳng & Hình học">
                                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="5" y1="19" x2="19" y2="5"/></svg>
-                                    <span id="currentShapeLabel">Đường thẳng</span>
+                                    <span id="currentShapeLabel" data-i18n="editor.shape_line">Đường thẳng</span>
                                     <svg class="svg-icon svg-icon-xs dropdown-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
                                 </button>
                                 <div class="ribbon-sub-menu" id="shapesMenu">
                                     <div class="sub-menu-item" onclick="selectShape('line', 'Đường thẳng')">
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="5" y1="19" x2="19" y2="5"/></svg>
-                                        <span>Đường thẳng</span>
+                                        <span data-i18n="editor.shape_line">Đường thẳng</span>
                                     </div>
                                     <div class="sub-menu-item" onclick="selectShape('arrow', 'Mũi tên')">
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-                                        <span>Mũi tên</span>
+                                        <span data-i18n="editor.shape_arrow">Mũi tên</span>
                                     </div>
                                     <div class="sub-menu-item" onclick="selectShape('rect', 'Hình chữ nhật')">
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
-                                        <span>Hình chữ nhật</span>
+                                        <span data-i18n="editor.shape_rect">Hình chữ nhật</span>
                                     </div>
                                     <div class="sub-menu-item" onclick="selectShape('circle', 'Hình tròn')">
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></svg>
-                                        <span>Hình tròn</span>
+                                        <span data-i18n="editor.shape_circle">Hình tròn</span>
                                     </div>
                                     <div class="sub-menu-item" onclick="selectShape('polygon', 'Đa giác')">
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/></svg>
-                                        <span>Đa giác</span>
+                                        <span data-i18n="editor.shape_polygon">Đa giác</span>
                                     </div>
                                 </div>
                             </div>
 
                             <button class="ribbon-tool-btn" data-tool="highlight" onclick="setEditorTool('highlight')" title="Tô sáng / Bút nhớ">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="m9 11-6 6v3h3l6-6"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/></svg>
-                                <span>Tô sáng</span>
+                                <span data-i18n="editor.tool_highlight">Tô sáng</span>
                             </button>
                             <button class="ribbon-tool-btn" data-tool="image" onclick="triggerEditorImageUpload()" title="Chèn hình ảnh">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                                <span>Hình ảnh</span>
+                                <span data-i18n="editor.tool_image">Hình ảnh</span>
                             </button>
                             <button class="ribbon-tool-btn" data-tool="stamp" onclick="openStampModal()" title="Con dấu (Đã duyệt, Bản nháp...)">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M5 22h14"/><path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 9h-11A2.5 2.5 0 0 0 4.73 13.73L7 17h10l2.27-3.27z"/><path d="M12 9V2"/></svg>
-                                <span>Con dấu</span>
+                                <span data-i18n="editor.tool_stamp">Con dấu</span>
                             </button>
                             <button class="ribbon-tool-btn" data-tool="link" onclick="setEditorTool('link')" title="Thêm liên kết">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                                <span>Liên kết</span>
+                                <span data-i18n="editor.tool_link">Liên kết</span>
                             </button>
                             <button class="ribbon-tool-btn" data-tool="note" onclick="setEditorTool('note')" title="Thêm ghi chú">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                                <span>Ghi chú</span>
+                                <span data-i18n="editor.tool_note">Ghi chú</span>
                             </button>
                         </div>
 
@@ -1128,11 +1136,11 @@ if (str_starts_with($requestUri, '/api/')) {
                         <div class="editor-ribbon-group actions-group">
                             <button class="ribbon-action-btn file-switch-btn" onclick="showEditorUploadState()" title="Đổi tệp PDF khác">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>
-                                <span>Đổi tệp</span>
+                                <span data-i18n="editor.btn_switch_file">Đổi tệp</span>
                             </button>
                             <button class="ribbon-action-btn" id="btnOpenPageManagerModal" onclick="openPageManagerModal()" title="Mở Trình quản lý trang toàn diện">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-                                <span>Quản lý trang</span>
+                                <span data-i18n="editor.btn_page_manager">Quản lý trang</span>
                             </button>
                             <button class="ribbon-icon-btn" onclick="printPdfDocument()" title="In ấn tài liệu">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
@@ -1142,7 +1150,7 @@ if (str_starts_with($requestUri, '/api/')) {
                             </button>
                             <button class="btn-complete-cta" onclick="finishAndSaveDocument()" title="Hoàn thành chỉnh sửa và lưu PDF">
                                 <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-                                <span>Hoàn thành</span>
+                                <span data-i18n="editor.btn_finish">Hoàn thành</span>
                             </button>
                         </div>
                     </div>
@@ -1150,7 +1158,7 @@ if (str_starts_with($requestUri, '/api/')) {
                     <!-- Editor Sub-Ribbon (Color swatches & Vector Icons) -->
                     <div class="editor-sub-ribbon">
                         <div class="sub-ribbon-colors">
-                            <span class="sub-ribbon-label">Màu sắc:</span>
+                            <span class="sub-ribbon-label" data-i18n="editor.colors_label">Màu sắc:</span>
                             <div class="color-palette">
                                 <button class="color-swatch active" style="--c: #000000;" onclick="setEditorColor('#000000')" title="Đen"></button>
                                 <button class="color-swatch" style="--c: #EF4444;" onclick="setEditorColor('#EF4444')" title="Đỏ"></button>
@@ -1167,7 +1175,7 @@ if (str_starts_with($requestUri, '/api/')) {
 
                         <!-- Professional Vector Annotation Icons (Replacing plastic emoji stickers) -->
                         <div class="sub-ribbon-stickers">
-                            <span class="sub-ribbon-label">Biểu tượng:</span>
+                            <span class="sub-ribbon-label" data-i18n="editor.stickers_label">Biểu tượng:</span>
                             <div class="vector-icon-palette">
                                 <button class="vector-icon-btn" onclick="addVectorIcon('chat')" title="Bình luận / Chat">
                                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -1205,13 +1213,13 @@ if (str_starts_with($requestUri, '/api/')) {
                         <div class="sub-ribbon-divider"></div>
 
                         <div class="sub-ribbon-properties" id="toolPropertiesPanel">
-                            <span class="sub-ribbon-label">Cỡ chữ/nét:</span>
+                            <span class="sub-ribbon-label" data-i18n="editor.stroke_label">Cỡ chữ/nét:</span>
                             <select id="editorStrokeOrFontSize" class="ribbon-select" onchange="updateStrokeOrFontSize(this.value)">
-                                <option value="12">12 px (Nhỏ)</option>
-                                <option value="14" selected>14 px (Chuẩn)</option>
-                                <option value="18">18 px (Vừa)</option>
-                                <option value="24">24 px (Lớn)</option>
-                                <option value="32">32 px (Tiêu đề)</option>
+                                <option value="12" data-i18n="editor.font_12">12 px (Nhỏ)</option>
+                                <option value="14" data-i18n="editor.font_14" selected>14 px (Chuẩn)</option>
+                                <option value="18" data-i18n="editor.font_18">18 px (Vừa)</option>
+                                <option value="24" data-i18n="editor.font_24">24 px (Lớn)</option>
+                                <option value="32" data-i18n="editor.font_32">32 px (Tiêu đề)</option>
                             </select>
                         </div>
                     </div>
@@ -1222,23 +1230,23 @@ if (str_starts_with($requestUri, '/api/')) {
                         <aside class="editor-left-strip" id="editorThumbnailsAside">
                             <div class="strip-header">
                                 <div class="strip-header-top">
-                                    <span class="strip-title">Trang tài liệu</span>
+                                    <span class="strip-title" data-i18n="editor.strip_title">Trang tài liệu</span>
                                     <span class="strip-count" id="stripPageCountBadge">11 trang</span>
                                 </div>
                                 <div class="strip-add-dropdown-wrapper">
                                     <button class="btn-strip-add" onclick="toggleAddPageDropdown(event)">
                                         <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                                        <span>Thêm trang</span>
+                                        <span data-i18n="editor.btn_add_page">Thêm trang</span>
                                         <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
                                     </button>
                                     <div class="strip-add-menu" id="stripAddMenu">
                                         <button class="strip-add-option" onclick="insertBlankPage()">
                                             <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
-                                            <span>Trang trắng mới</span>
+                                            <span data-i18n="editor.opt_blank_page">Trang trắng mới</span>
                                         </button>
                                         <button class="strip-add-option" onclick="triggerImportPdfPage()">
                                             <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                                            <span>Nhập từ tệp tin...</span>
+                                            <span data-i18n="editor.opt_import_file">Nhập từ tệp tin...</span>
                                         </button>
                                     </div>
                                 </div>
@@ -1272,7 +1280,7 @@ if (str_starts_with($requestUri, '/api/')) {
                             <!-- Floating Bottom Action Bar matching pdfaid -->
                             <div class="editor-floating-bar">
                                 <div class="floating-group page-jump">
-                                    <span class="floating-label">Trang:</span>
+                                    <span class="floating-label" data-i18n="editor.floating_page_label">Trang:</span>
                                     <button class="floating-btn" onclick="jumpEditorPage(-1)" title="Trang trước">▲</button>
                                     <span class="floating-page-info" id="floatingPageInfo">1 / 11</span>
                                     <button class="floating-btn" onclick="jumpEditorPage(1)" title="Trang tiếp">▼</button>
@@ -1303,19 +1311,19 @@ if (str_starts_with($requestUri, '/api/')) {
                 <div class="pricing-container">
                     <!-- Pricing Hero Section -->
                     <div class="pricing-hero">
-                        <div class="pricing-pill-badge">✨ Nâng cấp trải nghiệm tài liệu của bạn</div>
-                        <h1 class="pricing-hero-title">Chọn gói dịch vụ phù hợp với nhu cầu của bạn</h1>
-                        <p class="pricing-hero-subtitle">Tăng tốc xử lý tài liệu học tập, đồ án tốt nghiệp và hồ sơ nghiên cứu không giới hạn với sức mạnh của PDF Manager.</p>
+                        <div class="pricing-pill-badge" data-i18n="upgrade.pill_badge">✨ Nâng cấp trải nghiệm tài liệu của bạn</div>
+                        <h1 class="pricing-hero-title" data-i18n="upgrade.hero_title">Chọn gói dịch vụ phù hợp với nhu cầu của bạn</h1>
+                        <p class="pricing-hero-subtitle" data-i18n="upgrade.hero_subtitle">Tăng tốc xử lý tài liệu học tập, đồ án tốt nghiệp và hồ sơ nghiên cứu không giới hạn với sức mạnh của PDF Manager.</p>
 
                         <!-- Billing Toggle -->
                         <div class="billing-toggle-wrapper">
-                            <span class="billing-cycle-label" id="labelMonthly">Thanh toán Hàng tháng</span>
+                            <span class="billing-cycle-label" id="labelMonthly" data-i18n="upgrade.monthly">Thanh toán Hàng tháng</span>
                             <label class="billing-switch">
                                 <input type="checkbox" id="billingCycleToggle" onchange="toggleBillingCycle(this.checked)">
                                 <span class="billing-slider"></span>
                             </label>
                             <span class="billing-cycle-label" id="labelYearly">
-                                Hàng năm <span class="discount-badge">Tiết kiệm 20% 🎉</span>
+                                <span data-i18n="upgrade.yearly">Hàng năm</span> <span class="discount-badge" data-i18n="upgrade.discount">Tiết kiệm 20% 🎉</span>
                             </span>
                         </div>
                     </div>
@@ -1325,59 +1333,59 @@ if (str_starts_with($requestUri, '/api/')) {
                         <!-- FREE TIER -->
                         <div class="pricing-card <?= ($userPlan === 'FREE') ? 'current-tier' : '' ?>">
                             <div class="card-plan-header">
-                                <div class="card-tier-name">Miễn phí (FREE)</div>
-                                <p class="card-tier-desc">Dành cho sinh viên và nhu cầu đọc, sắp xếp tài liệu cơ bản.</p>
+                                <div class="card-tier-name" data-i18n="upgrade.free_name">Miễn phí (FREE)</div>
+                                <p class="card-tier-desc" data-i18n="upgrade.free_desc">Dành cho sinh viên và nhu cầu đọc, sắp xếp tài liệu cơ bản.</p>
                                 <div class="card-tier-price">
                                     <span class="price-val">0 đ</span>
-                                    <span class="price-period">/ vĩnh viễn</span>
+                                    <span class="price-period" data-i18n="upgrade.free_period">/ vĩnh viễn</span>
                                 </div>
                             </div>
                             <div class="card-plan-features">
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Tối đa 5 tài liệu / ngày</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Dung lượng lưu trữ 1 GB</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Trình chỉnh sửa văn bản cơ bản</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Ghép & tách tài liệu tiêu chuẩn</div>
-                                <div class="feature-item disabled"><span class="feature-icon cross">✕</span> Không giới hạn số trang xử lý</div>
-                                <div class="feature-item disabled"><span class="feature-icon cross">✕</span> Xử lý siêu tốc không watermark</div>
-                                <div class="feature-item disabled"><span class="feature-icon cross">✕</span> Ký số & xác thực bảo mật</div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.free_f1">Tối đa 5 tài liệu / ngày</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.free_f2">Dung lượng lưu trữ 1 GB</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.free_f3">Trình chỉnh sửa văn bản cơ bản</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.free_f4">Ghép & tách tài liệu tiêu chuẩn</span></div>
+                                <div class="feature-item disabled"><span class="feature-icon cross">✕</span> <span data-i18n="upgrade.free_f5">Không giới hạn số trang xử lý</span></div>
+                                <div class="feature-item disabled"><span class="feature-icon cross">✕</span> <span data-i18n="upgrade.free_f6">Xử lý siêu tốc không watermark</span></div>
+                                <div class="feature-item disabled"><span class="feature-icon cross">✕</span> <span data-i18n="upgrade.free_f7">Ký số & xác thực bảo mật</span></div>
                             </div>
                             <div class="card-plan-action">
                                 <?php if ($userPlan === 'FREE'): ?>
-                                    <button class="btn-tier-action btn-tier-current" disabled>Đang sử dụng</button>
+                                    <button class="btn-tier-action btn-tier-current" disabled data-i18n="upgrade.btn_using">Đang sử dụng</button>
                                 <?php else: ?>
-                                    <button class="btn-tier-action btn-tier-secondary" onclick="changePlan('FREE')">Chuyển về gói FREE</button>
+                                    <button class="btn-tier-action btn-tier-secondary" onclick="changePlan('FREE')" data-i18n="upgrade.btn_switch_free">Chuyển về gói FREE</button>
                                 <?php endif; ?>
                             </div>
                         </div>
 
                         <!-- PRO TIER (POPULAR) -->
                         <div class="pricing-card popular <?= ($userPlan === 'PRO') ? 'current-tier' : '' ?>">
-                            <div class="popular-ribbon">🔥 PHỔ BIẾN NHẤT</div>
+                            <div class="popular-ribbon" data-i18n="upgrade.pro_ribbon">🔥 PHỔ BIẾN NHẤT</div>
                             <div class="card-plan-header">
-                                <div class="card-tier-name">Chuyên nghiệp (PRO)</div>
-                                <p class="card-tier-desc">Dành cho sinh viên đồ án, nghiên cứu sinh và giảng viên cần xử lý cường độ cao.</p>
+                                <div class="card-tier-name" data-i18n="upgrade.pro_name">Chuyên nghiệp (PRO)</div>
+                                <p class="card-tier-desc" data-i18n="upgrade.pro_desc">Dành cho sinh viên đồ án, nghiên cứu sinh và giảng viên cần xử lý cường độ cao.</p>
                                 <div class="card-tier-price">
                                     <span class="price-val" id="proPriceValue">99.000 đ</span>
-                                    <span class="price-period" id="proPricePeriod">/ tháng</span>
+                                    <span class="price-period" id="proPricePeriod" data-i18n="upgrade.pro_period">/ tháng</span>
                                 </div>
                                 <div class="yearly-saving-hint" id="proYearlyHint" style="display: none;">Thanh toán 950.000 đ/năm (Tiết kiệm 238.000 đ)</div>
                             </div>
                             <div class="card-plan-features">
-                                <div class="feature-item"><span class="feature-icon check">✓</span> <strong>Không giới hạn</strong> số lượng tài liệu</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> <strong>Dung lượng không giới hạn</strong> (Cloud SSD)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Trình biên tập trực quan nâng cao 100%</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Trình quản lý trang thông minh (Kéo thả, xoay)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Chữ ký điện tử & Ghi chú đóng dấu chuyên nghiệp</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> <strong>Xử lý nhanh gấp 5 lần</strong> (Ưu tiên hàng đợi)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Xuất file sạch đẹp, không watermark</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Hỗ trợ kỹ thuật ưu tiên 24/7</div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n-html="upgrade.pro_f1"><strong>Không giới hạn</strong> số lượng tài liệu</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n-html="upgrade.pro_f2"><strong>Dung lượng không giới hạn</strong> (Cloud SSD)</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.pro_f3">Trình biên tập trực quan nâng cao 100%</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.pro_f4">Trình quản lý trang thông minh (Kéo thả, xoay)</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.pro_f5">Chữ ký điện tử & Ghi chú đóng dấu chuyên nghiệp</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n-html="upgrade.pro_f6"><strong>Xử lý nhanh gấp 5 lần</strong> (Ưu tiên hàng đợi)</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.pro_f7">Xuất file sạch đẹp, không watermark</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.pro_f8">Hỗ trợ kỹ thuật ưu tiên 24/7</span></div>
                             </div>
                             <div class="card-plan-action">
                                 <?php if ($userPlan === 'PRO'): ?>
-                                    <button class="btn-tier-action btn-tier-current" disabled>⭐ Đang sử dụng gói PRO</button>
+                                    <button class="btn-tier-action btn-tier-current" disabled data-i18n="upgrade.btn_pro_current">⭐ Đang sử dụng gói PRO</button>
                                 <?php else: ?>
                                     <button class="btn-tier-action btn-tier-primary" onclick="changePlan('PRO')">
-                                        <span>Nâng cấp PRO ngay</span>
+                                        <span data-i18n="upgrade.btn_pro_cta">Nâng cấp PRO ngay</span>
                                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
                                     </button>
                                 <?php endif; ?>
@@ -1387,27 +1395,27 @@ if (str_starts_with($requestUri, '/api/')) {
                         <!-- ENTERPRISE TIER -->
                         <div class="pricing-card <?= ($userPlan === 'ENTERPRISE') ? 'current-tier' : '' ?>">
                             <div class="card-plan-header">
-                                <div class="card-tier-name">Doanh nghiệp / Khoa viện</div>
-                                <p class="card-tier-desc">Dành cho nhóm nghiên cứu lớn, phòng ban hoặc toàn trường.</p>
+                                <div class="card-tier-name" data-i18n="upgrade.ent_name">Doanh nghiệp / Khoa viện</div>
+                                <p class="card-tier-desc" data-i18n="upgrade.ent_desc">Dành cho nhóm nghiên cứu lớn, phòng ban hoặc toàn trường.</p>
                                 <div class="card-tier-price">
                                     <span class="price-val" id="entPriceValue">299.000 đ</span>
-                                    <span class="price-period" id="entPricePeriod">/ tháng</span>
+                                    <span class="price-period" id="entPricePeriod" data-i18n="upgrade.ent_period">/ tháng</span>
                                 </div>
                                 <div class="yearly-saving-hint" id="entYearlyHint" style="display: none;">Thanh toán 2.870.000 đ/năm (Tiết kiệm 718.000 đ)</div>
                             </div>
                             <div class="card-plan-features">
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Tất cả quyền lợi gói <strong>PRO</strong></div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Quản lý tài khoản nhóm (Tối đa 25 thành viên)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Phân quyền tài liệu & Thư mục dùng chung</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> REST API tích hợp trực tiếp vào hệ thống trường</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Nhật ký kiểm toán minh bạch (Audit Log)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Quản lý viên hỗ trợ riêng (Dedicated Manager)</div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n-html="upgrade.ent_f1">Tất cả quyền lợi gói <strong>PRO</strong></span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.ent_f2">Quản lý tài khoản nhóm (Tối đa 25 thành viên)</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.ent_f3">Phân quyền tài liệu & Thư mục dùng chung</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.ent_f4">REST API tích hợp trực tiếp vào hệ thống trường</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.ent_f5">Nhật ký kiểm toán minh bạch (Audit Log)</span></div>
+                                <div class="feature-item"><span class="feature-icon check">✓</span> <span data-i18n="upgrade.ent_f6">Quản lý viên hỗ trợ riêng (Dedicated Manager)</span></div>
                             </div>
                             <div class="card-plan-action">
                                 <?php if ($userPlan === 'ENTERPRISE'): ?>
-                                    <button class="btn-tier-action btn-tier-current" disabled>Đang sử dụng Enterprise</button>
+                                    <button class="btn-tier-action btn-tier-current" disabled data-i18n="upgrade.btn_ent_current">Đang sử dụng Enterprise</button>
                                 <?php else: ?>
-                                    <button class="btn-tier-action btn-tier-secondary" onclick="changePlan('ENTERPRISE')">Nâng cấp Enterprise</button>
+                                    <button class="btn-tier-action btn-tier-secondary" onclick="changePlan('ENTERPRISE')" data-i18n="upgrade.btn_ent_cta">Nâng cấp Enterprise</button>
                                 <?php endif; ?>
                             </div>
                         </div>
@@ -1415,59 +1423,59 @@ if (str_starts_with($requestUri, '/api/')) {
 
                     <!-- Comparison Table -->
                     <div class="comparison-section">
-                        <h3 class="comparison-title">Bảng so sánh chi tiết tính năng</h3>
+                        <h3 class="comparison-title" data-i18n="upgrade.cmp_title">Bảng so sánh chi tiết tính năng</h3>
                         <div class="table-responsive">
                             <table class="comparison-table">
                                 <thead>
                                     <tr>
-                                        <th>Tính năng</th>
-                                        <th>Miễn phí (FREE)</th>
-                                        <th class="col-highlight">Chuyên nghiệp (PRO)</th>
-                                        <th>Doanh nghiệp</th>
+                                        <th data-i18n="upgrade.cmp_th_feature">Tính năng</th>
+                                        <th data-i18n="upgrade.cmp_th_free">Miễn phí (FREE)</th>
+                                        <th class="col-highlight" data-i18n="upgrade.cmp_th_pro">Chuyên nghiệp (PRO)</th>
+                                        <th data-i18n="upgrade.cmp_th_ent">Doanh nghiệp</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr>
-                                        <td>Số lượng tài liệu xử lý</td>
-                                        <td>5 tài liệu / ngày</td>
-                                        <td class="col-highlight font-weight-bold">Không giới hạn</td>
-                                        <td>Không giới hạn</td>
+                                        <td data-i18n="upgrade.cmp_f1">Số lượng tài liệu xử lý</td>
+                                        <td data-i18n="upgrade.cmp_f1_free">5 tài liệu / ngày</td>
+                                        <td class="col-highlight font-weight-bold" data-i18n="upgrade.cmp_unlimited">Không giới hạn</td>
+                                        <td data-i18n="upgrade.cmp_unlimited">Không giới hạn</td>
                                     </tr>
                                     <tr>
-                                        <td>Dung lượng lưu trữ đám mây</td>
-                                        <td>1 GB</td>
-                                        <td class="col-highlight font-weight-bold">Không giới hạn</td>
-                                        <td>Không giới hạn</td>
+                                        <td data-i18n="upgrade.cmp_f2">Dung lượng lưu trữ đám mây</td>
+                                        <td data-i18n="upgrade.cmp_f2_free">1 GB</td>
+                                        <td class="col-highlight font-weight-bold" data-i18n="upgrade.cmp_unlimited">Không giới hạn</td>
+                                        <td data-i18n="upgrade.cmp_unlimited">Không giới hạn</td>
                                     </tr>
                                     <tr>
-                                        <td>Trình biên tập PDFaid (Văn bản, Bút vẽ, Con dấu)</td>
-                                        <td>Cơ bản</td>
-                                        <td class="col-highlight text-success">✓ Đầy đủ công cụ</td>
-                                        <td class="text-success">✓ Đầy đủ công cụ</td>
+                                        <td data-i18n="upgrade.cmp_f3">Trình biên tập PDFaid (Văn bản, Bút vẽ, Con dấu)</td>
+                                        <td data-i18n="upgrade.cmp_basic">Cơ bản</td>
+                                        <td class="col-highlight text-success" data-i18n="upgrade.cmp_full">✓ Đầy đủ công cụ</td>
+                                        <td class="text-success" data-i18n="upgrade.cmp_full">✓ Đầy đủ công cụ</td>
                                     </tr>
                                     <tr>
-                                        <td>Trình quản lý trang (Xoay, Sắp xếp, Tách, Nhập)</td>
-                                        <td>Tối đa 10 trang</td>
-                                        <td class="col-highlight text-success">✓ Không giới hạn trang</td>
-                                        <td class="text-success">✓ Không giới hạn trang</td>
+                                        <td data-i18n="upgrade.cmp_f4">Trình quản lý trang (Xoay, Sắp xếp, Tách, Nhập)</td>
+                                        <td data-i18n="upgrade.cmp_f4_free">Tối đa 10 trang</td>
+                                        <td class="col-highlight text-success" data-i18n="upgrade.cmp_f4_pro">✓ Không giới hạn trang</td>
+                                        <td class="text-success" data-i18n="upgrade.cmp_f4_pro">✓ Không giới hạn trang</td>
                                     </tr>
                                     <tr>
-                                        <td>Bảng đối chiếu nguồn tài liệu (Manifest)</td>
-                                        <td>Cơ bản</td>
-                                        <td class="col-highlight text-success">✓ Chi tiết từng trang</td>
-                                        <td class="text-success">✓ Chi tiết từng trang</td>
+                                        <td data-i18n="upgrade.cmp_f5">Bảng đối chiếu nguồn tài liệu (Manifest)</td>
+                                        <td data-i18n="upgrade.cmp_basic">Cơ bản</td>
+                                        <td class="col-highlight text-success" data-i18n="upgrade.cmp_f5_pro">✓ Chi tiết từng trang</td>
+                                        <td class="text-success" data-i18n="upgrade.cmp_f5_pro">✓ Chi tiết từng trang</td>
                                     </tr>
                                     <tr>
-                                        <td>Tốc độ xử lý hàng đợi</td>
-                                        <td>Tiêu chuẩn</td>
-                                        <td class="col-highlight font-weight-bold">Nhanh gấp 5 lần</td>
-                                        <td>Ưu tiên cao nhất</td>
+                                        <td data-i18n="upgrade.cmp_f6">Tốc độ xử lý hàng đợi</td>
+                                        <td data-i18n="upgrade.cmp_standard">Tiêu chuẩn</td>
+                                        <td class="col-highlight font-weight-bold" data-i18n="upgrade.cmp_5x">Nhanh gấp 5 lần</td>
+                                        <td data-i18n="upgrade.cmp_highest">Ưu tiên cao nhất</td>
                                     </tr>
                                     <tr>
-                                        <td>API & Quản lý nhóm đa người dùng</td>
+                                        <td data-i18n="upgrade.cmp_f7">API & Quản lý nhóm đa người dùng</td>
                                         <td class="text-muted">✕</td>
                                         <td class="col-highlight text-muted">✕</td>
-                                        <td class="text-success">✓ Có sẵn</td>
+                                        <td class="text-success" data-i18n="upgrade.cmp_available">✓ Có sẵn</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -1476,32 +1484,32 @@ if (str_starts_with($requestUri, '/api/')) {
 
                     <!-- FAQ Section -->
                     <div class="pricing-faq-section">
-                        <h3 class="faq-title">Câu hỏi thường gặp</h3>
+                        <h3 class="faq-title" data-i18n="upgrade.faq_title">Câu hỏi thường gặp</h3>
                         <div class="faq-accordion">
                             <div class="faq-item">
                                 <div class="faq-question" onclick="toggleFaq(this)">
-                                    <span>Tôi có thể hủy hoặc thay đổi gói bất cứ lúc nào không?</span>
+                                    <span data-i18n="upgrade.faq_q1">Tôi có thể hủy hoặc thay đổi gói bất cứ lúc nào không?</span>
                                     <span class="faq-toggle-icon">+</span>
                                 </div>
-                                <div class="faq-answer">
+                                <div class="faq-answer" data-i18n="upgrade.faq_a1">
                                     Hoàn toàn có thể. Bạn có thể nâng cấp, hạ cấp hoặc hủy gói bất kỳ lúc nào ngay trong phần Cài đặt tài khoản. Không có phụ phí phát sinh nào.
                                 </div>
                             </div>
                             <div class="faq-item">
                                 <div class="faq-question" onclick="toggleFaq(this)">
-                                    <span>Phương thức thanh toán nào được hỗ trợ?</span>
+                                    <span data-i18n="upgrade.faq_q2">Phương thức thanh toán nào được hỗ trợ?</span>
                                     <span class="faq-toggle-icon">+</span>
                                 </div>
-                                <div class="faq-answer">
+                                <div class="faq-answer" data-i18n="upgrade.faq_a2">
                                     Chúng tôi hỗ trợ chuyển khoản ngân hàng QR Code (VietQR / Napas 247), ví MoMo, ZaloPay, thẻ tín dụng / ghi nợ nội địa và quốc tế (Visa, Mastercard).
                                 </div>
                             </div>
                             <div class="faq-item">
                                 <div class="faq-question" onclick="toggleFaq(this)">
-                                    <span>Dữ liệu và tài liệu PDF của tôi có được bảo mật không?</span>
+                                    <span data-i18n="upgrade.faq_q3">Dữ liệu và tài liệu PDF của tôi có được bảo mật không?</span>
                                     <span class="faq-toggle-icon">+</span>
                                 </div>
-                                <div class="faq-answer">
+                                <div class="faq-answer" data-i18n="upgrade.faq_a3">
                                     Tất cả tài liệu được mã hóa truyền tải theo chuẩn SSL/TLS và lưu trữ an toàn trong phân vùng riêng biệt của tài khoản bạn. Dữ liệu của bạn không bao giờ được chia sẻ với bất kỳ bên thứ ba nào.
                                 </div>
                             </div>
@@ -1512,97 +1520,501 @@ if (str_starts_with($requestUri, '/api/')) {
 
             <!-- VIEW 5: LỊCH SỬ XUẤT -->
             <div id="view-history" class="workspace-view <?= $currentView === 'history' ? 'active' : '' ?>">
-                <div class="table-section">
-                    <div class="table-header">
-                        <div>
-                            <h2 style="font-size: 1.25rem; font-weight: 700;">Lịch sử xuất & Bảng đối chiếu nguồn</h2>
-                            <p style="font-size: 0.8rem; color: var(--text-muted);">Quản lý tất cả các tệp PDF đã xuất, tra cứu minh bạch nguồn gốc từng trang</p>
+                <!-- Header Hero Banner -->
+                <div class="view-hero-card">
+                    <div class="view-hero-content">
+                        <div class="view-hero-badge">
+                            <span class="badge-dot"></span>
+                            <span data-i18n="history.badge_sub">Nhật ký & Tra cứu xuất bản</span>
                         </div>
-                        <button class="btn-outline" onclick="loadExportHistory()">
+                        <h2 class="view-hero-title" data-i18n="history.title">Lịch sử xuất</h2>
+                        <p class="view-hero-desc" data-i18n="history.desc">Quản lý và tra cứu tất cả các tệp PDF đã xuất, tải lại tài liệu và kiểm tra cấu trúc trang đối chiếu nguồn.</p>
+                    </div>
+                    <div class="view-hero-actions">
+                        <button class="btn-outline btn-hero-action" onclick="loadExportHistory()" title="Tải lại danh sách">
                             <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10"/></svg>
-                            <span>Làm mới</span>
+                            <span data-i18n="history.btn_refresh">Làm mới</span>
                         </button>
+                        <button class="btn-hero-action btn-danger-hero" onclick="clearAllHistory()" title="Xóa toàn bộ lịch sử xuất">
+                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                            <span data-i18n="history.btn_clear">Xóa lịch sử</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 4 Thống kê Metrics Grid -->
+                <div class="history-stats-grid">
+                    <div class="history-stat-card">
+                        <div class="stat-icon-wrap blue">
+                            <svg class="svg-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-value" id="historyMetricFiles">0</div>
+                            <div class="stat-label" data-i18n="history.stat_total">Tổng tệp đã xuất</div>
+                        </div>
+                    </div>
+                    <div class="history-stat-card">
+                        <div class="stat-icon-wrap green">
+                            <svg class="svg-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-value" id="historyMetricPages">0</div>
+                            <div class="stat-label" data-i18n="history.stat_pages">Tổng số trang xử lý</div>
+                        </div>
+                    </div>
+                    <div class="history-stat-card">
+                        <div class="stat-icon-wrap purple">
+                            <svg class="svg-icon" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-value" id="historyMetricSize">0 KB</div>
+                            <div class="stat-label" data-i18n="history.stat_size">Dung lượng đã tạo</div>
+                        </div>
+                    </div>
+                    <div class="history-stat-card">
+                        <div class="stat-icon-wrap amber">
+                            <svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-value stat-value-sm" id="historyMetricRecent">Chưa có</div>
+                            <div class="stat-label" data-i18n="history.stat_latest">Lần xuất gần nhất</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Content Section: Toolbar + Data Table -->
+                <div class="table-section">
+                    <div class="history-toolbar">
+                        <div class="history-search-wrap">
+                            <svg class="svg-icon svg-icon-sm search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                            <input type="text" id="historySearchInput" class="history-search-input" placeholder="Tìm theo tên tệp xuất hoặc mã #ID..." data-i18n-placeholder="history.search_placeholder" oninput="filterExportHistory()">
+                            <button type="button" class="search-clear-btn" id="historySearchClear" onclick="clearHistorySearch()" style="display: none;">✕</button>
+                        </div>
+                        <div class="history-filter-group">
+                            <div class="filter-select-wrap">
+                                <label for="historyTypeFilter" class="filter-label" data-i18n="history.filter_type_label">Loại tác vụ:</label>
+                                <select id="historyTypeFilter" class="custom-select" onchange="filterExportHistory()">
+                                    <option value="all" data-i18n="history.type_all">Tất cả loại tác vụ</option>
+                                    <option value="merge" data-i18n="history.type_merge">Ghép tài liệu (Merge)</option>
+                                    <option value="split" data-i18n="history.type_split">Tách tài liệu (Split)</option>
+                                    <option value="edit" data-i18n="history.type_edit">Biên tập chỉnh sửa</option>
+                                </select>
+                            </div>
+                            <div class="filter-select-wrap">
+                                <label for="historySortFilter" class="filter-label" data-i18n="history.filter_sort_label">Sắp xếp:</label>
+                                <select id="historySortFilter" class="custom-select" onchange="filterExportHistory()">
+                                    <option value="date_desc" data-i18n="history.sort_date_desc">Mới nhất trước</option>
+                                    <option value="date_asc" data-i18n="history.sort_date_asc">Cũ nhất trước</option>
+                                    <option value="size_desc" data-i18n="history.sort_size_desc">Dung lượng lớn nhất</option>
+                                    <option value="pages_desc" data-i18n="history.sort_pages_desc">Nhiều trang nhất</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="table-responsive">
-                    <table class="custom-table">
-                        <thead>
-                            <tr>
-                                <th>Mã ID</th>
-                                <th>Tên tệp xuất</th>
-                                <th>Số trang</th>
-                                <th>Dung lượng</th>
-                                <th>Thời gian xuất</th>
-                                <th>Thao tác</th>
-                            </tr>
-                        </thead>
-                        <tbody id="historyTableBody">
-                            <tr>
-                                <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 24px;">Đang tải lịch sử xuất...</td>
-                            </tr>
-                        </tbody>
-                    </table>
+                        <table class="custom-table history-data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 80px;" data-i18n="history.th_id">Mã #ID</th>
+                                    <th data-i18n="history.th_file">Tên tệp xuất & Định dạng</th>
+                                    <th style="width: 130px;" data-i18n="history.th_action">Tác vụ</th>
+                                    <th style="width: 110px;" data-i18n="history.th_pages">Số trang</th>
+                                    <th style="width: 120px;" data-i18n="history.th_size">Dung lượng</th>
+                                    <th style="width: 160px;" data-i18n="history.th_created">Thời gian tạo</th>
+                                    <th style="width: 180px; text-align: center;" data-i18n="history.th_ops">Thao tác nhanh</th>
+                                </tr>
+                            </thead>
+                            <tbody id="historyTableBody">
+                                <tr>
+                                    <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                                        <div class="spinner-small" style="margin: 0 auto 10px;"></div>
+                                        <span>Đang tải lịch sử xuất...</span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="history-table-footer" id="historyTableFooter">
+                        <span id="historyCountNotice">Hiển thị 0 tệp xuất</span>
                     </div>
                 </div>
             </div>
 
             <!-- VIEW 6: CÀI ĐẶT HỆ THỐNG -->
             <div id="view-settings" class="workspace-view <?= $currentView === 'settings' ? 'active' : '' ?>">
-                <div class="table-section">
-                    <div class="table-header">
-                        <div>
-                            <h2 style="font-size: 1.25rem; font-weight: 700;">Cài đặt hệ thống & Tùy chọn xử lý</h2>
-                            <p style="font-size: 0.8rem; color: var(--text-muted);">Tùy biến cấu hình lưu trữ, chất lượng xuất PDF và tài khoản</p>
+                <!-- Header Hero Banner -->
+                <div class="view-hero-card">
+                    <div class="view-hero-content">
+                        <div class="view-hero-badge">
+                            <span class="badge-dot"></span>
+                            <span data-i18n="settings.badge">Cấu hình & Tùy biến</span>
+                        </div>
+                        <h2 class="view-hero-title" data-i18n="settings.title">Cài đặt</h2>
+                        <p class="view-hero-desc" data-i18n="settings.desc">Tùy biến môi trường làm việc, chất lượng xử lý tệp PDF, chính sách bảo mật dữ liệu và quản lý gói tài khoản.</p>
+                    </div>
+                    <div class="view-hero-actions">
+                        <button type="button" class="btn-outline btn-hero-action" onclick="resetSettingsToDefault()">
+                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                            <span data-i18n="settings.btn_reset">Khôi phục mặc định</span>
+                        </button>
+                        <button type="button" class="btn-hero-action btn-save-hero" onclick="saveAllSettings()">
+                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                            <span data-i18n="settings.btn_save">Lưu thiết lập</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Sub-tabs Navigation -->
+                <div class="settings-nav-tabs">
+                    <button type="button" class="settings-tab-btn active" data-tab="appearance" onclick="switchSettingsTab('appearance')">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                        <span data-i18n="settings.tab_appearance">Giao diện & Trải nghiệm</span>
+                    </button>
+                    <button type="button" class="settings-tab-btn" data-tab="engine" onclick="switchSettingsTab('engine')">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        <span data-i18n="settings.tab_engine">Công cụ xử lý PDF</span>
+                    </button>
+                    <button type="button" class="settings-tab-btn" data-tab="security" onclick="switchSettingsTab('security')">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        <span data-i18n="settings.tab_security">Bảo mật & Lưu trữ</span>
+                    </button>
+                    <button type="button" class="settings-tab-btn" data-tab="account" onclick="switchSettingsTab('account')">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                        <span data-i18n="settings.tab_account">Tài khoản & Gói SaaS</span>
+                    </button>
+                </div>
+
+                <!-- Tab 1: Giao diện & Trải nghiệm -->
+                <div id="tab-pane-appearance" class="settings-tab-pane active">
+                    <div class="settings-card">
+                        <div class="settings-card-header">
+                            <div>
+                                <h3 class="settings-card-title" data-i18n="settings.theme_card_title">Chủ đề & Hiển thị</h3>
+                                <p class="settings-card-desc" data-i18n="settings.theme_card_desc">Cá nhân hóa giao diện làm việc phù hợp với mắt và thói quen của bạn</p>
+                            </div>
+                        </div>
+                        <div class="settings-card-body">
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.theme_label" for="settingTheme">Chế độ giao diện</label>
+                                    <span class="settings-hint" data-i18n="settings.theme_hint">Chọn gam màu hiển thị ưa thích cho toàn ứng dụng</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <select id="settingTheme" class="custom-select settings-select">
+                                        <option value="light" data-i18n="settings.theme_light" <?= ($currentSettings['theme'] ?? '') === 'light' ? 'selected' : '' ?>>☀️ Giao diện Sáng (Mặc định chuẩn)</option>
+                                        <option value="dark" data-i18n="settings.theme_dark" <?= ($currentSettings['theme'] ?? '') === 'dark' ? 'selected' : '' ?>>🌙 Giao diện Tối (Bảo vệ mắt)</option>
+                                        <option value="system" data-i18n="settings.theme_system" <?= ($currentSettings['theme'] ?? '') === 'system' ? 'selected' : '' ?>>🖥️ Theo cài đặt hệ điều hành</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.lang_label" for="settingLanguage">Ngôn ngữ hiển thị</label>
+                                    <span class="settings-hint" data-i18n="settings.lang_hint">Ngôn ngữ áp dụng cho toàn bộ nhãn và thông báo</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <select id="settingLanguage" class="custom-select settings-select">
+                                        <option value="vi" data-i18n="settings.lang_vi" <?= ($currentSettings['language'] ?? '') === 'vi' ? 'selected' : '' ?>>🇻🇳 Tiếng Việt (Vietnamese)</option>
+                                        <option value="en" data-i18n="settings.lang_en" <?= ($currentSettings['language'] ?? '') === 'en' ? 'selected' : '' ?>>🇬🇧 English (International)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.density_label" for="settingDensity">Mật độ hiển thị danh sách trang</label>
+                                    <span class="settings-hint" data-i18n="settings.density_hint">Độ thoáng của lưới trang trong giao diện Chỉnh sửa</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <select id="settingDensity" class="custom-select settings-select">
+                                        <option value="comfortable" data-i18n="settings.density_comfortable" <?= ($currentSettings['density'] ?? '') === 'comfortable' ? 'selected' : '' ?>>Tiêu chuẩn (Rộng rãi, dễ kéo thả)</option>
+                                        <option value="compact" data-i18n="settings.density_compact" <?= ($currentSettings['density'] ?? '') === 'compact' ? 'selected' : '' ?>>Gọn gàng (Hiển thị nhiều trang hơn)</option>
+                                    </select>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="settings-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 16px;">
-                        <!-- Thẻ 1: Thông tin gói & dung lượng -->
-                        <div class="setting-card" style="background: white; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 20px;">
-                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
-                                <h3 style="font-size: 1rem; font-weight: 700;">Gói dịch vụ & Bộ nhớ</h3>
-                                <span class="plan-badge <?= strtolower($currentUser['plan'] ?? 'FREE') ?>">
-                                    <?= htmlspecialchars($currentUser['plan'] ?? 'FREE') ?>
-                                </span>
-                            </div>
-                            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 14px;">
-                                <?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'Bạn đang sử dụng gói PRO với dung lượng không giới hạn và tốc độ xử lý ưu tiên cao nhất.' : 'Tài khoản miễn phí với 1GB lưu trữ và các công cụ ghép, tách chuẩn.' ?>
-                            </p>
-                            <button type="button" class="btn-primary" onclick="openPlanModal()" style="width: 100%;">
-                                <?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'Quản lý gói PRO' : 'Nâng cấp lên PRO ngay' ?>
-                            </button>
-                        </div>
-
-                        <!-- Thẻ 2: Cấu hình xuất tệp PDF -->
-                        <div class="setting-card" style="background: white; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 20px;">
-                            <h3 style="font-size: 1rem; font-weight: 700; margin-bottom: 14px;">Tùy chọn xuất tệp</h3>
-                            <div style="margin-bottom: 12px;">
-                                <label style="font-size: 0.8rem; font-weight: 600; color: #475569; display: block; margin-bottom: 6px;">Độ phân giải trang xem trước</label>
-                                <select class="auth-input" style="padding-left: 12px; height: 38px;">
-                                    <option>150 DPI (Tiêu chuẩn - Tốc độ nhanh)</option>
-                                    <option>300 DPI (Chất lượng in ấn sắc nét)</option>
-                                </select>
-                            </div>
-                            <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 14px;">
-                                <span style="font-size: 0.85rem; color: #334155;">Tự động tối ưu dung lượng tệp xuất</span>
-                                <input type="checkbox" checked style="width: 18px; height: 18px; cursor: pointer;">
+                    <div class="settings-card">
+                        <div class="settings-card-header">
+                            <div>
+                                <h3 class="settings-card-title" data-i18n="settings.interaction_card_title">Tương tác & Thông báo</h3>
+                                <p class="settings-card-desc" data-i18n="settings.interaction_card_desc">Cấu hình cách hệ thống tương tác và phản hồi</p>
                             </div>
                         </div>
-
-                        <!-- Thẻ 3: Bảo mật & Dữ liệu -->
-                        <div class="setting-card" style="background: white; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 20px;">
-                            <h3 style="font-size: 1rem; font-weight: 700; margin-bottom: 14px;">Bảo mật & Tự động dọn dẹp</h3>
-                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-                                <div>
-                                    <div style="font-size: 0.85rem; font-weight: 600; color: #334155;">Tự hủy tệp tạm sau 24h</div>
-                                    <div style="font-size: 0.75rem; color: var(--text-muted);">Bảo vệ quyền riêng tư tài liệu theo tiêu chuẩn</div>
+                        <div class="settings-card-body">
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.autocollapse_label" for="settingAutoCollapse">Tự động thu gọn thanh bên (Sidebar)</label>
+                                    <span class="settings-hint" data-i18n="settings.autocollapse_hint">Mở rộng tối đa không gian chỉnh sửa trang PDF</span>
                                 </div>
-                                <input type="checkbox" checked style="width: 18px; height: 18px; cursor: pointer;">
+                                <div class="settings-control-col">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="settingAutoCollapse" <?= !empty($currentSettings['auto_collapse_sidebar']) ? 'checked' : '' ?>>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
                             </div>
-                            <button type="button" class="btn-outline" onclick="showToast('Đã lưu cấu hình cài đặt hệ thống.', 'success')" style="width: 100%; margin-top: 10px;">
-                                Lưu thiết lập
-                            </button>
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.sound_label" for="settingNotificationSound">Âm thanh thông báo</label>
+                                    <span class="settings-hint" data-i18n="settings.sound_hint">Phát chuông nhẹ khi hoàn thành ghép hoặc xuất file PDF</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="settingNotificationSound" <?= ($currentSettings['notification_sound'] ?? true) ? 'checked' : '' ?>>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Tab 2: Công cụ xử lý PDF -->
+                <div id="tab-pane-engine" class="settings-tab-pane">
+                    <div class="settings-card">
+                        <div class="settings-card-header">
+                            <div>
+                                <h3 class="settings-card-title" data-i18n="settings.engine_card_title">Chất lượng hiển thị & Xuất bản PDF</h3>
+                                <p class="settings-card-desc" data-i18n="settings.engine_card_desc">Tùy biến bộ sinh ảnh trang (Preview Engine) và thuật toán nén FPDI</p>
+                            </div>
+                        </div>
+                        <div class="settings-card-body">
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.dpi_label" for="settingPreviewDpi">Độ phân giải trang xem trước (Preview DPI)</label>
+                                    <span class="settings-hint" data-i18n="settings.dpi_hint">DPI càng cao hình ảnh càng rõ nét, DPI thấp xử lý nhanh hơn</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <select id="settingPreviewDpi" class="custom-select settings-select">
+                                        <option value="72" data-i18n="settings.dpi_72" <?= ((int)($currentSettings['preview_dpi'] ?? 150)) === 72 ? 'selected' : '' ?>>72 DPI (Siêu tốc - Tiết kiệm băng thông)</option>
+                                        <option value="150" data-i18n="settings.dpi_150" <?= ((int)($currentSettings['preview_dpi'] ?? 150)) === 150 ? 'selected' : '' ?>>150 DPI (Cân bằng chuẩn - Khuyên dùng)</option>
+                                        <option value="300" data-i18n="settings.dpi_300" <?= ((int)($currentSettings['preview_dpi'] ?? 150)) === 300 ? 'selected' : '' ?>>300 DPI (Sắc nét cao cấp - Chuẩn in ấn)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.compress_label" for="settingCompression">Thuật toán nén tệp PDF xuất ra</label>
+                                    <span class="settings-hint" data-i18n="settings.compress_hint">Tối ưu dung lượng tệp khi tải về hoặc chia sẻ email</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <select id="settingCompression" class="custom-select settings-select">
+                                        <option value="none" data-i18n="settings.compress_none" <?= ($currentSettings['compression_level'] ?? '') === 'none' ? 'selected' : '' ?>>Không nén (Giữ nguyên chất lượng gốc tuyệt đối)</option>
+                                        <option value="balanced" data-i18n="settings.compress_balanced" <?= ($currentSettings['compression_level'] ?? '') === 'balanced' ? 'selected' : '' ?>>Nén thông minh (Tối ưu dung lượng, không vỡ ảnh)</option>
+                                        <option value="maximum" data-i18n="settings.compress_maximum" <?= ($currentSettings['compression_level'] ?? '') === 'maximum' ? 'selected' : '' ?>>Nén tối đa (Dung lượng siêu nhẹ cho web/email)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.orient_label" for="settingOrientation">Định hướng trang mặc định</label>
+                                    <span class="settings-hint" data-i18n="settings.orient_hint">Khổ trang mặc định khi nhập và xuất trang mới</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <select id="settingOrientation" class="custom-select settings-select">
+                                        <option value="original" data-i18n="settings.orient_original" <?= ($currentSettings['default_orientation'] ?? '') === 'original' ? 'selected' : '' ?>>Giữ nguyên tỉ lệ gốc của từng trang</option>
+                                        <option value="a4_portrait" data-i18n="settings.orient_a4_portrait" <?= ($currentSettings['default_orientation'] ?? '') === 'a4_portrait' ? 'selected' : '' ?>>Chuẩn hóa Khổ A4 Đứng (Portrait)</option>
+                                        <option value="a4_landscape" data-i18n="settings.orient_a4_landscape" <?= ($currentSettings['default_orientation'] ?? '') === 'a4_landscape' ? 'selected' : '' ?>>Chuẩn hóa Khổ A4 Ngang (Landscape)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.pagenum_label" for="settingAutoPageNumbers">Tự động nhúng số trang chân trang</label>
+                                    <span class="settings-hint" data-i18n="settings.pagenum_hint">Đánh số trang dạng 'Trang X / Y' ở đáy tài liệu khi ghép</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="settingAutoPageNumbers" <?= !empty($currentSettings['auto_page_numbers']) ? 'checked' : '' ?>>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.manifest_label" for="settingKeepManifest">Lưu bảng đối chiếu nguồn (Source Manifest)</label>
+                                    <span class="settings-hint" data-i18n="settings.manifest_hint">Ghi nhận metadata nguồn gốc từng trang phục vụ tra cứu sau này</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="settingKeepManifest" <?= ($currentSettings['keep_manifest'] ?? true) ? 'checked' : '' ?>>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 3: Bảo mật & Lưu trữ -->
+                <div id="tab-pane-security" class="settings-tab-pane">
+                    <div class="settings-card">
+                        <div class="settings-card-header">
+                            <div>
+                                <h3 class="settings-card-title" data-i18n="settings.sec_card_title">Chính sách lưu trữ & Vòng đời dữ liệu</h3>
+                                <p class="settings-card-desc" data-i18n="settings.sec_card_desc">Cấu hình cơ chế tự động dọn dẹp và bảo mật theo chuẩn ISO/IEC 27001</p>
+                            </div>
+                        </div>
+                        <div class="settings-card-body">
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.cleanup_label" for="settingAutoCleanup">Tự động dọn dẹp tệp xuất trên máy chủ</label>
+                                    <span class="settings-hint" data-i18n="settings.cleanup_hint">Hệ thống sẽ tự hủy các tệp xuất sau khoảng thời gian chỉ định</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <select id="settingAutoCleanup" class="custom-select settings-select">
+                                        <option value="24h" data-i18n="settings.cleanup_24h" <?= ($currentSettings['auto_cleanup'] ?? '') === '24h' ? 'selected' : '' ?>>Tự hủy sau 24 giờ (Khuyên dùng bảo mật)</option>
+                                        <option value="7d" data-i18n="settings.cleanup_7d" <?= ($currentSettings['auto_cleanup'] ?? '') === '7d' ? 'selected' : '' ?>>Tự hủy sau 7 ngày</option>
+                                        <option value="30d" data-i18n="settings.cleanup_30d" <?= ($currentSettings['auto_cleanup'] ?? '') === '30d' ? 'selected' : '' ?>>Tự hủy sau 30 ngày</option>
+                                        <option value="never" data-i18n="settings.cleanup_never" <?= ($currentSettings['auto_cleanup'] ?? '') === 'never' ? 'selected' : '' ?>>Không tự hủy (Chỉ xóa thủ công)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.pwd_label" for="settingDefaultPassword">Mật khẩu bảo vệ mặc định khi xuất</label>
+                                    <span class="settings-hint" data-i18n="settings.pwd_hint">Tự động mã hóa AES-128 cho các tệp PDF được xuất (để trống nếu không dùng)</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <input type="password" id="settingDefaultPassword" class="auth-input settings-input" value="<?= htmlspecialchars($currentSettings['default_password'] ?? '') ?>" placeholder="Để trống nếu không khóa tệp..." data-i18n-placeholder="settings.pwd_placeholder">
+                                </div>
+                            </div>
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.incognito_label" for="settingIncognito">Chế độ riêng tư (Incognito Editor)</label>
+                                    <span class="settings-hint" data-i18n="settings.incognito_hint">Không lưu bộ nhớ đệm trang PDF trên trình duyệt máy khách</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="settingIncognito" <?= !empty($currentSettings['incognito_mode']) ? 'checked' : '' ?>>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="settings-card danger-zone">
+                        <div class="settings-card-header">
+                            <div>
+                                <h3 class="settings-card-title" data-i18n="settings.cache_card_title" style="color: #EF4444;">Dọn dẹp vùng nhớ & Bộ nhớ đệm</h3>
+                                <p class="settings-card-desc" data-i18n="settings.cache_card_desc">Giải phóng dung lượng bộ nhớ cục bộ trên trình duyệt</p>
+                            </div>
+                        </div>
+                        <div class="settings-card-body">
+                            <div class="settings-form-row">
+                                <div class="settings-label-col">
+                                    <label class="settings-label" data-i18n="settings.cache_label">Xóa dữ liệu bộ đệm trình duyệt (Client Cache)</label>
+                                    <span class="settings-hint" data-i18n="settings.cache_hint">Xóa sạch các thumbnail trang nháp đã lưu tạm trong LocalStorage</span>
+                                </div>
+                                <div class="settings-control-col">
+                                    <button type="button" class="btn-danger-outline" onclick="clearClientCache()">
+                                        <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                        <span data-i18n="settings.btn_cache">Dọn dẹp Cache ngay</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 4: Tài khoản & Gói SaaS -->
+                <div id="tab-pane-account" class="settings-tab-pane">
+                    <div class="settings-card">
+                        <div class="settings-card-header">
+                            <div>
+                                <h3 class="settings-card-title" data-i18n="settings.profile_card_title">Hồ sơ người dùng & Phân quyền</h3>
+                                <p class="settings-card-desc" data-i18n="settings.profile_card_desc">Thông tin tài khoản đang đăng nhập trong phiên làm việc</p>
+                            </div>
+                        </div>
+                        <div class="settings-card-body">
+                            <div class="profile-info-grid">
+                                <div class="profile-field-box">
+                                    <span class="profile-field-label" data-i18n="profile.name_label">Họ và tên:</span>
+                                    <strong class="profile-field-val"><?= htmlspecialchars($currentUser['name'] ?? 'Khách vãng lai') ?></strong>
+                                </div>
+                                <div class="profile-field-box">
+                                    <span class="profile-field-label" data-i18n="profile.email_label">Email tài khoản:</span>
+                                    <strong class="profile-field-val"><?= htmlspecialchars($currentUser['email'] ?? 'Chưa đăng ký') ?></strong>
+                                </div>
+                                <div class="profile-field-box">
+                                    <span class="profile-field-label" data-i18n="profile.username_label">Tên đăng nhập:</span>
+                                    <strong class="profile-field-val"><?= htmlspecialchars($currentUser['username'] ?? 'guest') ?></strong>
+                                </div>
+                                <div class="profile-field-box">
+                                    <span class="profile-field-label" data-i18n="profile.role_label">Vai trò:</span>
+                                    <span class="status-pill success"><span class="status-dot"></span> <?= htmlspecialchars($currentUser['role'] ?? 'Thành viên') ?></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="settings-card">
+                        <div class="settings-card-header">
+                            <div>
+                                <h3 class="settings-card-title" data-i18n="settings.plan_card_title">Gói dịch vụ & Hạn mức tài nguyên</h3>
+                                <p class="settings-card-desc" data-i18n="settings.plan_card_desc">Quản lý giới hạn tải lên, dung lượng lưu trữ và quyền ưu tiên xử lý</p>
+                            </div>
+                            <span class="plan-badge <?= strtolower($currentUser['plan'] ?? 'FREE') ?>">
+                                Gói <?= htmlspecialchars($currentUser['plan'] ?? 'FREE') ?>
+                            </span>
+                        </div>
+                        <div class="settings-card-body">
+                            <div class="storage-usage-container">
+                                <div class="storage-usage-header">
+                                    <span data-i18n="profile.storage_limit_label">Hạn mức lưu trữ đám mây</span>
+                                    <strong><?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'Không giới hạn (PRO Plan)' : '142 MB / 1,024 MB (14%)' ?></strong>
+                                </div>
+                                <div class="storage-progress-bar">
+                                    <div class="storage-progress-fill <?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'pro-fill' : '' ?>" style="width: <?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? '100%' : '14%' ?>;"></div>
+                                </div>
+                                <div class="storage-features-list">
+                                    <div class="storage-feature-item">
+                                        <svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                                        <span>Tốc độ render thumbnail: <strong><?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'Ưu tiên cao nhất' : 'Tiêu chuẩn' ?></strong></span>
+                                    </div>
+                                    <div class="storage-feature-item">
+                                        <svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                                        <span>Giới hạn kích thước tệp tải lên: <strong><?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? '500 MB / tệp' : '50 MB / tệp' ?></strong></span>
+                                    </div>
+                                    <div class="storage-feature-item">
+                                        <svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                                        <span>Đầy đủ công cụ ký số, đóng dấu & vector watermark: <strong>Đã kích hoạt</strong></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div style="margin-top: 20px; display: flex; gap: 12px; flex-wrap: wrap;">
+                                <button type="button" class="btn-primary" onclick="openPlanModal()" data-i18n="<?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'profile.btn_manage_pro' : 'profile.btn_upgrade_pro' ?>">
+                                    <?= ($currentUser['plan'] ?? 'FREE') === 'PRO' ? 'Quản lý gói PRO' : 'Nâng cấp lên PRO ngay' ?>
+                                </button>
+                                <?php if ($isLoggedIn): ?>
+                                    <button type="button" class="btn-outline" onclick="logout()" data-i18n="profile.btn_logout">Đăng xuất tài khoản</button>
+                                <?php else: ?>
+                                    <button type="button" class="btn-outline" onclick="openAuthModal('login')" data-i18n="profile.btn_login">Đăng nhập tài khoản</button>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Footer Save Bar -->
+                <div class="settings-save-footer">
+                    <div class="settings-footer-note">
+                        <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                        <span data-i18n="settings.footer_note">Cài đặt sẽ tự động lưu vào trình duyệt và phiên làm việc của bạn.</span>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <button type="button" class="btn-outline" onclick="resetSettingsToDefault()">
+                            <span data-i18n="settings.btn_reset">Khôi phục mặc định</span>
+                        </button>
+                        <button type="button" class="btn-primary" onclick="saveAllSettings()">
+                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                            <span data-i18n="settings.btn_save_all">Lưu tất cả thiết lập</span>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -1611,26 +2023,26 @@ if (str_starts_with($requestUri, '/api/')) {
 
     <!-- MOBILE BOTTOM NAVIGATION (Khớp bản thiết kế Mobile) -->
     <nav class="mobile-bottom-nav">
-        <a href="/home" class="mobile-nav-item <?= $currentView === 'home' ? 'active' : '' ?>" data-view="home" onclick="switchView('home', event)">
+        <a href="<?= $baseUrl ?>/home" class="mobile-nav-item <?= $currentView === 'home' ? 'active' : '' ?>" data-view="home" onclick="switchView('home', event)">
             <svg class="svg-icon" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-            <span>Trang chủ</span>
+            <span data-i18n="nav.home">Trang chủ</span>
         </a>
-        <a href="/documents" class="mobile-nav-item <?= $currentView === 'documents' ? 'active' : '' ?>" data-view="documents" onclick="switchView('documents', event)">
+        <a href="<?= $baseUrl ?>/documents" class="mobile-nav-item <?= $currentView === 'documents' ? 'active' : '' ?>" data-view="documents" onclick="switchView('documents', event)">
             <svg class="svg-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            <span>Tài liệu</span>
+            <span data-i18n="nav.documents">Tài liệu</span>
         </a>
         <div class="mobile-nav-item center-action" onclick="switchView('editor', event)" title="Mở Trình Chỉnh sửa PDF">
             <div class="mobile-plus-circle" style="background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%);">
                 <svg class="svg-icon svg-icon-lg" viewBox="0 0 24 24" style="stroke: white;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </div>
         </div>
-        <a href="/upgrade" class="mobile-nav-item <?= $currentView === 'upgrade' ? 'active' : '' ?>" data-view="upgrade" onclick="switchView('upgrade', event)">
+        <a href="<?= $baseUrl ?>/upgrade" class="mobile-nav-item <?= $currentView === 'upgrade' ? 'active' : '' ?>" data-view="upgrade" onclick="switchView('upgrade', event)">
             <svg class="svg-icon" viewBox="0 0 24 24" style="color: #F59E0B;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-            <span>Nâng Cấp</span>
+            <span data-i18n="nav.upgrade">Nâng Cấp</span>
         </a>
-        <a href="/settings" class="mobile-nav-item <?= $currentView === 'settings' ? 'active' : '' ?>" data-view="settings" onclick="switchView('settings', event)">
+        <a href="<?= $baseUrl ?>/settings" class="mobile-nav-item <?= $currentView === 'settings' ? 'active' : '' ?>" data-view="settings" onclick="switchView('settings', event)">
             <svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            <span>Cài đặt</span>
+            <span data-i18n="nav.settings">Cài đặt</span>
         </a>
     </nav>
 
@@ -1638,7 +2050,7 @@ if (str_starts_with($requestUri, '/api/')) {
     <div id="uploadModal" class="modal-overlay">
         <div class="modal-box">
             <div class="modal-header">
-                <h3>Tải lên tệp PDF mới</h3>
+                <h3 data-i18n="modal.upload_title">Tải lên tệp PDF mới</h3>
                 <button class="btn-close" onclick="closeModal('uploadModal')">
                     <svg class="svg-icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
@@ -1647,13 +2059,13 @@ if (str_starts_with($requestUri, '/api/')) {
                 <div style="margin-bottom: 12px; color: #2563EB;">
                     <svg class="svg-icon" style="width: 48px; height: 48px;" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                 </div>
-                <h4 style="font-size: 1rem; margin-bottom: 4px; font-weight: 700;">Kéo & Thả tệp PDF vào đây</h4>
-                <p style="font-size: 0.8rem; color: var(--text-muted);">hoặc bấm vào để chọn tệp từ máy tính</p>
-                <p style="font-size: 0.72rem; color: #94A3B8; margin-top: 8px;">Giới hạn dung lượng tối đa: 25 MB • Chỉ chấp nhận định dạng .pdf</p>
+                <h4 style="font-size: 1rem; margin-bottom: 4px; font-weight: 700;" data-i18n="modal.upload_drop_title">Kéo & Thả tệp PDF vào đây</h4>
+                <p style="font-size: 0.8rem; color: var(--text-muted);" data-i18n="modal.upload_drop_sub">hoặc bấm vào để chọn tệp từ máy tính</p>
+                <p style="font-size: 0.72rem; color: #94A3B8; margin-top: 8px;" data-i18n="modal.upload_limit">Giới hạn dung lượng tối đa: 25 MB • Chỉ chấp nhận định dạng .pdf</p>
             </div>
             <input type="file" id="fileInput" accept="application/pdf" style="display: none;" onchange="handleFileSelect(event)">
             <div id="uploadProgress" style="display: none; margin-top: 12px;">
-                <div style="font-size: 0.8rem; margin-bottom: 4px;">Đang xử lý tải lên...</div>
+                <div style="font-size: 0.8rem; margin-bottom: 4px;" data-i18n="modal.uploading">Đang xử lý tải lên...</div>
                 <div class="progress-bar"><div class="progress-fill" style="width: 100%;"></div></div>
             </div>
         </div>
@@ -1664,8 +2076,8 @@ if (str_starts_with($requestUri, '/api/')) {
         <div class="modal-box modal-lg">
             <div class="modal-header">
                 <div>
-                    <h3 id="manifestModalTitle">Bảng đối chiếu trang nguồn (Source Manifest)</h3>
-                    <p style="font-size: 0.75rem; color: var(--text-muted);">Xác minh từng trang đầu ra lấy từ tệp gốc và trang gốc nào</p>
+                    <h3 id="manifestModalTitle" data-i18n="modal.manifest_title">Bảng đối chiếu trang nguồn (Source Manifest)</h3>
+                    <p style="font-size: 0.75rem; color: var(--text-muted);" data-i18n="modal.manifest_sub">Xác minh từng trang đầu ra lấy từ tệp gốc và trang gốc nào</p>
                 </div>
                 <button class="btn-close" onclick="closeModal('manifestModal')">
                     <svg class="svg-icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1675,11 +2087,11 @@ if (str_starts_with($requestUri, '/api/')) {
             <table class="custom-table">
                 <thead>
                     <tr>
-                        <th>Trang kết quả</th>
-                        <th>Tệp nguồn gốc</th>
-                        <th>Trang gốc</th>
-                        <th>Nhãn nhận diện</th>
-                        <th>Góc xoay</th>
+                        <th data-i18n="modal.manifest_th_output">Trang kết quả</th>
+                        <th data-i18n="modal.manifest_th_source_doc">Tệp nguồn gốc</th>
+                        <th data-i18n="modal.manifest_th_source_page">Trang gốc</th>
+                        <th data-i18n="modal.manifest_th_label">Nhãn nhận diện</th>
+                        <th data-i18n="modal.manifest_th_rotation">Góc xoay</th>
                     </tr>
                 </thead>
                 <tbody id="manifestTableBody"></tbody>
@@ -1697,8 +2109,8 @@ if (str_starts_with($requestUri, '/api/')) {
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
                     </div>
                     <div>
-                        <h3 id="authModalTitle" style="font-size: 1.15rem; font-weight: 700; margin-bottom: 2px;">Tài khoản PDF Manager</h3>
-                        <p style="font-size: 0.74rem; color: var(--text-muted);">Đăng nhập hoặc đăng ký tài khoản để quản lý tài liệu cá nhân</p>
+                        <h3 id="authModalTitle" style="font-size: 1.15rem; font-weight: 700; margin-bottom: 2px;" data-i18n="modal.auth_title">Tài khoản PDF Manager</h3>
+                        <p style="font-size: 0.74rem; color: var(--text-muted);" data-i18n="modal.auth_sub">Đăng nhập hoặc đăng ký tài khoản để quản lý tài liệu cá nhân</p>
                     </div>
                 </div>
                 <button class="btn-close" onclick="closeModal('authModal')">
@@ -1708,58 +2120,58 @@ if (str_starts_with($requestUri, '/api/')) {
 
             <!-- Auth Tabs: Đăng nhập / Đăng ký -->
             <div class="auth-tabs">
-                <button type="button" class="auth-tab-btn active" id="tabAuthLogin" onclick="switchAuthTab('login')">Đăng nhập</button>
-                <button type="button" class="auth-tab-btn" id="tabAuthRegister" onclick="switchAuthTab('register')">Đăng ký mới</button>
+                <button type="button" class="auth-tab-btn active" id="tabAuthLogin" onclick="switchAuthTab('login')" data-i18n="modal.auth_tab_login">Đăng nhập</button>
+                <button type="button" class="auth-tab-btn" id="tabAuthRegister" onclick="switchAuthTab('register')" data-i18n="modal.auth_tab_register">Đăng ký mới</button>
             </div>
 
             <!-- Form Đăng nhập -->
             <form id="formLogin" onsubmit="handleAuthLogin(event)" class="auth-form-body">
                 <div class="form-group">
-                    <label class="form-label">Tên đăng nhập hoặc Email</label>
+                    <label class="form-label" data-i18n="modal.auth_login_user_lbl">Tên đăng nhập hoặc Email</label>
                     <div class="input-with-icon">
                         <svg class="svg-icon svg-icon-sm input-icon" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                        <input type="text" id="loginUsername" required placeholder="Nhập tên đăng nhập hoặc email..." class="auth-input">
+                        <input type="text" id="loginUsername" required placeholder="Nhập tên đăng nhập hoặc email..." data-i18n-placeholder="modal.auth_login_user_ph" class="auth-input">
                     </div>
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label">Mật khẩu</label>
+                    <label class="form-label" data-i18n="modal.auth_login_pwd_lbl">Mật khẩu</label>
                     <div class="input-with-icon">
                         <svg class="svg-icon svg-icon-sm input-icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                        <input type="password" id="loginPassword" required placeholder="Nhập mật khẩu của bạn..." class="auth-input">
+                        <input type="password" id="loginPassword" required placeholder="Nhập mật khẩu của bạn..." data-i18n-placeholder="modal.auth_login_pwd_ph" class="auth-input">
                     </div>
                 </div>
 
                 <button type="submit" class="btn-primary auth-submit-btn" id="btnLoginSubmit">
-                    <span>Đăng nhập</span>
+                    <span data-i18n="modal.auth_login_btn">Đăng nhập</span>
                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
                 </button>
 
                 <div class="auth-switch-prompt">
-                    Chưa có tài khoản? <a href="javascript:void(0)" onclick="switchAuthTab('register')">Đăng ký tài khoản mới</a>
+                    <span data-i18n="modal.auth_prompt_no_account">Chưa có tài khoản?</span> <a href="javascript:void(0)" onclick="switchAuthTab('register')" data-i18n="modal.auth_link_register">Đăng ký tài khoản mới</a>
                 </div>
             </form>
 
             <!-- Form Đăng ký -->
             <form id="formRegister" onsubmit="handleAuthRegister(event)" class="auth-form-body" style="display: none;">
                 <div class="form-group">
-                    <label class="form-label">Họ và tên đầy đủ</label>
+                    <label class="form-label" data-i18n="modal.auth_reg_fullname_lbl">Họ và tên đầy đủ</label>
                     <div class="input-with-icon">
                         <svg class="svg-icon svg-icon-sm input-icon" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                        <input type="text" id="regFullName" required placeholder="Ví dụ: Nguyễn Văn An..." class="auth-input">
+                        <input type="text" id="regFullName" required placeholder="Ví dụ: Nguyễn Văn An..." data-i18n-placeholder="modal.auth_reg_fullname_ph" class="auth-input">
                     </div>
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label">Tên đăng nhập</label>
+                    <label class="form-label" data-i18n="modal.auth_reg_user_lbl">Tên đăng nhập</label>
                     <div class="input-with-icon">
                         <svg class="svg-icon svg-icon-sm input-icon" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/></svg>
-                        <input type="text" id="regUsername" required placeholder="Nhập tên đăng nhập (vd: nguyenvana)..." class="auth-input">
+                        <input type="text" id="regUsername" required placeholder="Nhập tên đăng nhập (vd: nguyenvana)..." data-i18n-placeholder="modal.auth_reg_user_ph" class="auth-input">
                     </div>
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label">Địa chỉ Email</label>
+                    <label class="form-label" data-i18n="modal.auth_reg_email_lbl">Địa chỉ Email</label>
                     <div class="input-with-icon">
                         <svg class="svg-icon svg-icon-sm input-icon" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
                         <input type="email" id="regEmail" required placeholder="vd: user@example.com" class="auth-input">
@@ -1768,22 +2180,22 @@ if (str_starts_with($requestUri, '/api/')) {
 
                 <div class="form-row-2">
                     <div class="form-group">
-                        <label class="form-label">Mật khẩu (tối thiểu 6 ký tự)</label>
+                        <label class="form-label" data-i18n="modal.auth_reg_pwd_lbl">Mật khẩu (tối thiểu 6 ký tự)</label>
                         <input type="password" id="regPassword" required minlength="6" placeholder="Mật khẩu..." class="auth-input" style="padding-left: 12px;">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Xác nhận mật khẩu</label>
+                        <label class="form-label" data-i18n="modal.auth_reg_pwd_confirm_lbl">Xác nhận mật khẩu</label>
                         <input type="password" id="regPasswordConfirm" required minlength="6" placeholder="Nhập lại..." class="auth-input" style="padding-left: 12px;">
                     </div>
                 </div>
 
                 <button type="submit" class="btn-primary auth-submit-btn" id="btnRegisterSubmit">
-                    <span>Tạo tài khoản và Đăng nhập</span>
+                    <span data-i18n="modal.auth_reg_btn">Tạo tài khoản và Đăng nhập</span>
                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
                 </button>
 
                 <div class="auth-switch-prompt">
-                    Đã có tài khoản? <a href="javascript:void(0)" onclick="switchAuthTab('login')">Đăng nhập ngay</a>
+                    <span data-i18n="modal.auth_prompt_has_account">Đã có tài khoản?</span> <a href="javascript:void(0)" onclick="switchAuthTab('login')" data-i18n="modal.auth_link_login">Đăng nhập ngay</a>
                 </div>
             </form>
         </div>
@@ -1798,8 +2210,8 @@ if (str_starts_with($requestUri, '/api/')) {
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24" style="stroke: #fff;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
                     </div>
                     <div>
-                        <h3 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 2px;">Gói dịch vụ & Quyền lợi</h3>
-                        <p style="font-size: 0.74rem; color: var(--text-muted);">Lựa chọn gói phù hợp với tần suất xử lý tệp PDF của bạn</p>
+                        <h3 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 2px;" data-i18n="modal.plan_title">Gói dịch vụ & Quyền lợi</h3>
+                        <p style="font-size: 0.74rem; color: var(--text-muted);" data-i18n="modal.plan_sub">Lựa chọn gói phù hợp với tần suất xử lý tệp PDF của bạn</p>
                     </div>
                 </div>
                 <button class="btn-close" onclick="closeModal('planModal')">
@@ -1812,45 +2224,45 @@ if (str_starts_with($requestUri, '/api/')) {
                 <div class="pricing-card <?= ($_SESSION['user_plan'] ?? 'FREE') === 'FREE' ? 'current-active-plan' : '' ?>">
                     <div class="pricing-card-header">
                         <span class="plan-badge free">FREE</span>
-                        <h4 style="font-size: 1.05rem; margin: 8px 0 4px; font-weight: 700;">Gói Miễn Phí</h4>
-                        <div class="pricing-price">0đ <span style="font-size: 0.76rem; font-weight: normal; color: var(--text-muted);">/ trọn đời</span></div>
+                        <h4 style="font-size: 1.05rem; margin: 8px 0 4px; font-weight: 700;" data-i18n="modal.plan_free_name">Gói Miễn Phí</h4>
+                        <div class="pricing-price">0đ <span style="font-size: 0.76rem; font-weight: normal; color: var(--text-muted);" data-i18n="modal.plan_free_unit">/ trọn đời</span></div>
                     </div>
                     <ul class="pricing-features">
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Dung lượng lưu trữ: 1 GB</li>
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Ghép, tách, sắp xếp trang tiêu chuẩn</li>
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Tối đa 50 trang mỗi tài liệu</li>
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Xuất file PDF chất lượng gốc</li>
-                        <li class="disabled"><svg class="svg-icon svg-icon-xs text-muted" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Dung lượng không giới hạn</li>
-                        <li class="disabled"><svg class="svg-icon svg-icon-xs text-muted" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Ưu tiên hàng chờ xử lý siêu tốc</li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span data-i18n="upgrade.free_f2">Dung lượng lưu trữ: 1 GB</span></li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span data-i18n="upgrade.free_f4">Ghép, tách, sắp xếp trang tiêu chuẩn</span></li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span>Tối đa 50 trang mỗi tài liệu</span></li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span>Xuất file PDF chất lượng gốc</span></li>
+                        <li class="disabled"><svg class="svg-icon svg-icon-xs text-muted" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> <span data-i18n="upgrade.pro_f2">Dung lượng không giới hạn</span></li>
+                        <li class="disabled"><svg class="svg-icon svg-icon-xs text-muted" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> <span data-i18n="upgrade.pro_f6">Ưu tiên hàng chờ xử lý siêu tốc</span></li>
                     </ul>
                     <?php if (($_SESSION['user_plan'] ?? 'FREE') === 'FREE'): ?>
-                        <button type="button" class="btn-plan-select btn-current" disabled>✓ Đang sử dụng</button>
+                        <button type="button" class="btn-plan-select btn-current" disabled data-i18n="modal.plan_current_active">✓ Đang sử dụng</button>
                     <?php else: ?>
-                        <button type="button" class="btn-plan-select outline" onclick="upgradePlan('FREE')">Chuyển sang gói FREE</button>
+                        <button type="button" class="btn-plan-select outline" onclick="upgradePlan('FREE')" data-i18n="modal.plan_btn_switch_free">Chuyển sang gói FREE</button>
                     <?php endif; ?>
                 </div>
 
                 <!-- Gói PRO -->
                 <div class="pricing-card pro-card <?= ($_SESSION['user_plan'] ?? 'FREE') === 'PRO' ? 'current-active-plan' : '' ?>">
-                    <div class="pro-ribbon">PHỔ BIẾN NHẤT</div>
+                    <div class="pro-ribbon" data-i18n="upgrade.pro_ribbon">PHỔ BIẾN NHẤT</div>
                     <div class="pricing-card-header">
                         <span class="plan-badge pro">PRO</span>
-                        <h4 style="font-size: 1.05rem; margin: 8px 0 4px; font-weight: 700;">Gói Chuyên Nghiệp</h4>
-                        <div class="pricing-price">99.000đ <span style="font-size: 0.76rem; font-weight: normal; color: var(--text-muted);">/ tháng</span></div>
+                        <h4 style="font-size: 1.05rem; margin: 8px 0 4px; font-weight: 700;" data-i18n="modal.plan_pro_name">Gói Chuyên Nghiệp</h4>
+                        <div class="pricing-price">99.000đ <span style="font-size: 0.76rem; font-weight: normal; color: var(--text-muted);" data-i18n="modal.plan_pro_unit">/ tháng</span></div>
                     </div>
                     <ul class="pricing-features">
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <strong>Không giới hạn</strong> dung lượng lưu trữ</li>
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Không giới hạn số trang tệp PDF</li>
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Tốc độ xử lý siêu tốc ưu tiên hàng đầu</li>
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Nén file tối ưu hóa dung lượng</li>
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Trích xuất và bảo mật cao cấp</li>
-                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Hỗ trợ kỹ thuật chuyên gia 24/7</li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span data-i18n-html="upgrade.pro_f2"><strong>Không giới hạn</strong> dung lượng lưu trữ</span></li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span data-i18n="upgrade.pro_f4">Không giới hạn số trang tệp PDF</span></li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span data-i18n="upgrade.pro_f6">Tốc độ xử lý siêu tốc ưu tiên hàng đầu</span></li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span>Nén file tối ưu hóa dung lượng</span></li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span>Trích xuất và bảo mật cao cấp</span></li>
+                        <li><svg class="svg-icon svg-icon-xs text-success" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span data-i18n="upgrade.pro_f8">Hỗ trợ kỹ thuật chuyên gia 24/7</span></li>
                     </ul>
                     <?php if (($_SESSION['user_plan'] ?? 'FREE') === 'PRO'): ?>
-                        <button type="button" class="btn-plan-select btn-current" disabled>✓ Đang kích hoạt</button>
+                        <button type="button" class="btn-plan-select btn-current" disabled data-i18n="modal.plan_current_active">✓ Đang kích hoạt</button>
                     <?php else: ?>
                         <button type="button" class="btn-plan-select pro-btn" onclick="upgradePlan('PRO')">
-                            <span>Nâng cấp PRO ngay</span>
+                            <span data-i18n="modal.plan_btn_upgrade_pro">Nâng cấp PRO ngay</span>
                             <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
                         </button>
                     <?php endif; ?>
@@ -1864,8 +2276,8 @@ if (str_starts_with($requestUri, '/api/')) {
         <div class="modal-box account-modal-box">
             <div class="modal-header">
                 <div>
-                    <h3 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 2px;">Thông tin tài khoản</h3>
-                    <p style="font-size: 0.74rem; color: var(--text-muted);">Quản lý hồ sơ cá nhân và gói hội viên của bạn</p>
+                    <h3 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 2px;" data-i18n="modal.account_title">Thông tin tài khoản</h3>
+                    <p style="font-size: 0.74rem; color: var(--text-muted);" data-i18n="modal.account_sub">Quản lý hồ sơ cá nhân và gói hội viên của bạn</p>
                 </div>
                 <button class="btn-close" onclick="closeModal('accountModal')">
                     <svg class="svg-icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1885,33 +2297,34 @@ if (str_starts_with($requestUri, '/api/')) {
 
             <div class="account-info-grid">
                 <div class="account-info-item">
-                    <span class="info-label">Tên đăng nhập:</span>
+                    <span class="info-label" data-i18n="modal.account_lbl_user">Tên đăng nhập:</span>
                     <strong class="info-value" id="accModalUsername"><?= htmlspecialchars($_SESSION['username'] ?? 'nguyenvana') ?></strong>
                 </div>
                 <div class="account-info-item">
-                    <span class="info-label">Gói dịch vụ:</span>
+                    <span class="info-label" data-i18n="modal.account_lbl_plan">Gói dịch vụ:</span>
                     <strong class="info-value" id="accModalPlan"><?= htmlspecialchars($_SESSION['user_plan'] ?? 'FREE') ?></strong>
                 </div>
                 <div class="account-info-item">
-                    <span class="info-label">Trạng thái:</span>
+                    <span class="info-label" data-i18n="modal.account_lbl_status">Trạng thái:</span>
                     <strong class="info-value text-success" style="display: flex; align-items: center; gap: 4px;">
                         <span style="width: 7px; height: 7px; border-radius: 50%; background: #10B981; display: inline-block;"></span>
-                        Hoạt động bình thường
+                        <span data-i18n="modal.account_val_status">Hoạt động bình thường</span>
                     </strong>
                 </div>
                 <div class="account-info-item">
-                    <span class="info-label">Dung lượng:</span>
+                    <span class="info-label" data-i18n="modal.account_lbl_storage">Dung lượng:</span>
                     <strong class="info-value" id="accModalStorage"><?= ($_SESSION['user_plan'] ?? 'FREE') === 'PRO' ? 'Không giới hạn' : '1 GB (Đã dùng 125 MB)' ?></strong>
                 </div>
             </div>
 
             <div class="modal-actions" style="margin-top: 22px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-                <button type="button" class="btn-primary" onclick="switchView('upgrade'); closeModal('accountModal');" style="padding: 9px 18px; font-size: 0.84rem;">
+                <button type="button" class="btn-primary" onclick="switchView('upgrade'); closeModal('accountModal');" style="padding: 9px 18px; font-size: 0.84rem;" data-i18n="<?= ($_SESSION['user_plan'] ?? 'FREE') === 'PRO' ? 'modal.account_btn_pro_detail' : 'modal.account_btn_upgrade' ?>">
                     <?= ($_SESSION['user_plan'] ?? 'FREE') === 'PRO' ? '⭐ Chi tiết gói PRO' : '⚡ Nâng cấp lên gói PRO' ?>
                 </button>
-                <button type="button" class="btn-secondary" onclick="logoutUser()" style="color: #EF4444; border-color: #FCA5A5; padding: 9px 16px; font-size: 0.84rem;">
+                <button type="button" class="btn-secondary" onclick="logoutUser()" style="color: #EF4444; border-color: #FCA5A5; padding: 9px 16px; font-size: 0.84rem;" data-i18n="modal.account_btn_logout">
                     Đăng xuất
                 </button>
+            </div>
         </div>
     </div>
 
@@ -1925,7 +2338,7 @@ if (str_starts_with($requestUri, '/api/')) {
                         <svg class="svg-icon" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
                     </button>
                     <div>
-                        <h3 class="pm-title">Quản lý trang tài liệu</h3>
+                        <h3 class="pm-title" data-i18n="modal.pm_title">Quản lý trang tài liệu</h3>
                         <p class="pm-subtitle" id="pmPageCounterText">11 trang • Kéo thả để sắp xếp, chọn để thao tác</p>
                     </div>
                 </div>
@@ -1933,34 +2346,34 @@ if (str_starts_with($requestUri, '/api/')) {
                 <div class="pm-toolbar">
                     <button class="pm-tool-btn" onclick="pmAddNewPage()" title="Thêm trang trắng">
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        <span>Thêm trang</span>
+                        <span data-i18n="modal.pm_btn_add">Thêm trang</span>
                     </button>
                     <button class="pm-tool-btn" onclick="pmRotateSelected(-90)" title="Xoay ngược chiều kim đồng hồ 90°">
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M2.5 2v6h6"/><path d="M2.5 8a10 10 0 1 1 2.4 7.6"/></svg>
-                        <span>Xoay trái</span>
+                        <span data-i18n="modal.pm_btn_rot_left">Xoay trái</span>
                     </button>
                     <button class="pm-tool-btn" onclick="pmRotateSelected(90)" title="Xoay theo chiều kim đồng hồ 90°">
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21.5 2v6h-6"/><path d="M21.5 8a10 10 0 1 0-2.4 7.6"/></svg>
-                        <span>Xoay phải</span>
+                        <span data-i18n="modal.pm_btn_rot_right">Xoay phải</span>
                     </button>
                     <button class="pm-tool-btn text-danger" onclick="pmDeleteSelected()" title="Xóa các trang đã chọn">
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                        <span>Xóa trang</span>
+                        <span data-i18n="modal.pm_btn_delete">Xóa trang</span>
                     </button>
                     <button class="pm-tool-btn" onclick="pmDuplicateSelected()" title="Nhân đôi trang đã chọn">
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                        <span>Nhân bản</span>
+                        <span data-i18n="modal.pm_btn_duplicate">Nhân bản</span>
                     </button>
                     <button class="pm-tool-btn" onclick="pmImportDocument()" title="Nhập thêm trang từ tệp PDF khác">
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                        <span>Nhập PDF</span>
+                        <span data-i18n="modal.pm_btn_import">Nhập PDF</span>
                     </button>
 
                     <div class="pm-divider"></div>
 
                     <button class="pm-tool-btn" onclick="pmToggleSelectAll()" id="btnPmSelectAll">
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9 11 12 14 22 4"/></svg>
-                        <span id="pmSelectAllLabel">Chọn tất cả</span>
+                        <span id="pmSelectAllLabel" data-i18n="modal.pm_btn_select_all">Chọn tất cả</span>
                     </button>
 
                     <div class="pm-divider"></div>
@@ -1975,13 +2388,13 @@ if (str_starts_with($requestUri, '/api/')) {
 
                 <div class="pm-header-right">
                     <div class="pm-zoom-slider-wrap">
-                        <span style="font-size: 0.75rem; color: var(--text-muted);">Cỡ thẻ:</span>
+                        <span style="font-size: 0.75rem; color: var(--text-muted);" data-i18n="modal.pm_card_size">Cỡ thẻ:</span>
                         <input type="range" min="130" max="260" value="170" class="pm-slider" id="pmCardSizeSlider" oninput="adjustPmCardSize(this.value)">
                     </div>
-                    <button class="btn-secondary" onclick="closePageManagerModal()">Hủy bỏ</button>
+                    <button class="btn-secondary" onclick="closePageManagerModal()" data-i18n="modal.pm_btn_cancel">Hủy bỏ</button>
                     <button class="btn-primary" onclick="pmSaveAndApply()">
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-                        <span>Lưu thay đổi</span>
+                        <span data-i18n="modal.pm_btn_save">Lưu thay đổi</span>
                     </button>
                 </div>
             </div>
@@ -2004,8 +2417,8 @@ if (str_starts_with($requestUri, '/api/')) {
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="m20.5 14.5-8-8-5 5 8 8Z"/><path d="M7.5 11.5 2 17v5h5l5.5-5.5"/><circle cx="17.5" cy="6.5" r="2.5"/></svg>
                     </div>
                     <div>
-                        <h3 style="font-size: 1.1rem; font-weight: 700; margin: 0;">Tạo và Chèn Chữ ký số</h3>
-                        <p style="font-size: 0.75rem; color: var(--text-muted); margin: 2px 0 0;">Ký trực tiếp bằng tay, gõ tên hoặc tải ảnh con dấu chữ ký</p>
+                        <h3 style="font-size: 1.1rem; font-weight: 700; margin: 0;" data-i18n="modal.sig_title">Tạo và Chèn Chữ ký số</h3>
+                        <p style="font-size: 0.75rem; color: var(--text-muted); margin: 2px 0 0;" data-i18n="modal.sig_sub">Ký trực tiếp bằng tay, gõ tên hoặc tải ảnh con dấu chữ ký</p>
                     </div>
                 </div>
                 <button class="btn-close" onclick="closeModal('signatureModal')">
@@ -2016,15 +2429,15 @@ if (str_starts_with($requestUri, '/api/')) {
             <div class="sig-tabs">
                 <button type="button" class="sig-tab-btn active" id="tabSigDraw" onclick="switchSigTab('draw')">
                     <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
-                    <span>Vẽ chữ ký</span>
+                    <span data-i18n="modal.sig_tab_draw">Vẽ chữ ký</span>
                 </button>
                 <button type="button" class="sig-tab-btn" id="tabSigType" onclick="switchSigTab('type')">
                     <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
-                    <span>Gõ tên</span>
+                    <span data-i18n="modal.sig_tab_type">Gõ tên</span>
                 </button>
                 <button type="button" class="sig-tab-btn" id="tabSigUpload" onclick="switchSigTab('upload')">
                     <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    <span>Tải ảnh</span>
+                    <span data-i18n="modal.sig_tab_upload">Tải ảnh</span>
                 </button>
             </div>
 
@@ -2033,18 +2446,18 @@ if (str_starts_with($requestUri, '/api/')) {
                 <div class="sig-pad-wrapper">
                     <canvas id="sigCanvas" width="560" height="180" class="sig-canvas"></canvas>
                     <div class="sig-pad-baseline"></div>
-                    <div class="sig-pad-hint">Ký tên của bạn vào đây bằng chuột hoặc cảm ứng</div>
+                    <div class="sig-pad-hint" data-i18n="modal.sig_draw_hint">Ký tên của bạn vào đây bằng chuột hoặc cảm ứng</div>
                 </div>
                 <div class="sig-toolbar">
                     <div class="sig-colors">
-                        <span style="font-size: 0.78rem; font-weight: 600; color: #64748B;">Mực ký:</span>
+                        <span style="font-size: 0.78rem; font-weight: 600; color: #64748B;" data-i18n="modal.sig_ink">Mực ký:</span>
                         <button type="button" class="sig-color-dot active" style="--c: #1E3A8A;" onclick="setSigColor('#1E3A8A', this)" title="Xanh mực"></button>
                         <button type="button" class="sig-color-dot" style="--c: #0F172A;" onclick="setSigColor('#0F172A', this)" title="Đen"></button>
                         <button type="button" class="sig-color-dot" style="--c: #DC2626;" onclick="setSigColor('#DC2626', this)" title="Đỏ"></button>
                     </div>
                     <button type="button" class="btn-sig-clear" onclick="clearSigCanvas()">
                         <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                        <span>Ký lại</span>
+                        <span data-i18n="modal.sig_clear">Ký lại</span>
                     </button>
                 </div>
             </div>
@@ -2052,16 +2465,16 @@ if (str_starts_with($requestUri, '/api/')) {
             <!-- Tab 2: Type Signature -->
             <div id="sigTabContentType" class="sig-tab-content" style="display: none;">
                 <div class="form-group" style="margin-bottom: 14px;">
-                    <label class="form-label">Nhập họ tên của bạn:</label>
+                    <label class="form-label" data-i18n="modal.sig_type_lbl">Nhập họ tên của bạn:</label>
                     <input type="text" id="sigTextInput" class="auth-input" style="padding-left: 12px;" value="Nguyễn Văn A" oninput="updateTypedSigPreview()">
                 </div>
                 <div class="sig-typed-preview-box">
                     <div id="sigTypedPreview" class="sig-typed-text" style="font-family: 'Brush Script MT', 'Dancing Script', cursive, sans-serif; font-size: 38px; color: #1E3A8A;">Nguyễn Văn A</div>
                 </div>
                 <div class="sig-font-picker">
-                    <button type="button" class="sig-font-option active" onclick="setSigFont('Dancing Script, cursive', this)">Phong cách 1 (Viết tay thanh lịch)</button>
-                    <button type="button" class="sig-font-option" onclick="setSigFont('Brush Script MT, cursive', this)">Phong cách 2 (Nét bút lông ký nhanh)</button>
-                    <button type="button" class="sig-font-option" onclick="setSigFont('Segoe Script, cursive', this)">Phong cách 3 (Cổ điển nghiêng)</button>
+                    <button type="button" class="sig-font-option active" onclick="setSigFont('Dancing Script, cursive', this)" data-i18n="modal.sig_font_style1">Phong cách 1 (Viết tay thanh lịch)</button>
+                    <button type="button" class="sig-font-option" onclick="setSigFont('Brush Script MT, cursive', this)" data-i18n="modal.sig_font_style2">Phong cách 2 (Nét bút lông ký nhanh)</button>
+                    <button type="button" class="sig-font-option" onclick="setSigFont('Segoe Script, cursive', this)" data-i18n="modal.sig_font_style3">Phong cách 3 (Cổ điển nghiêng)</button>
                 </div>
             </div>
 
@@ -2069,8 +2482,8 @@ if (str_starts_with($requestUri, '/api/')) {
             <div id="sigTabContentUpload" class="sig-tab-content" style="display: none;">
                 <div class="sig-upload-box" onclick="document.getElementById('sigImageFileInput').click()">
                     <svg class="svg-icon" style="width: 36px; height: 36px; color: #2563EB; margin-bottom: 8px;" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    <div style="font-weight: 600; font-size: 0.9rem;">Bấm để chọn ảnh chữ ký (PNG, JPG)</div>
-                    <div style="font-size: 0.75rem; color: #94A3B8; margin-top: 4px;">Khuyến nghị ảnh nền trong suốt (Transparent PNG)</div>
+                    <div style="font-weight: 600; font-size: 0.9rem;" data-i18n="modal.sig_upload_prompt">Bấm để chọn ảnh chữ ký (PNG, JPG)</div>
+                    <div style="font-size: 0.75rem; color: #94A3B8; margin-top: 4px;" data-i18n="modal.sig_upload_hint">Khuyến nghị ảnh nền trong suốt (Transparent PNG)</div>
                 </div>
                 <input type="file" id="sigImageFileInput" accept="image/png,image/jpeg" style="display: none;" onchange="handleSigImageUpload(event)">
                 <div id="sigImagePreviewContainer" style="display: none; text-align: center; margin-top: 12px;">
@@ -2079,10 +2492,10 @@ if (str_starts_with($requestUri, '/api/')) {
             </div>
 
             <div class="modal-actions" style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px;">
-                <button type="button" class="btn-secondary" onclick="closeModal('signatureModal')">Hủy bỏ</button>
+                <button type="button" class="btn-secondary" onclick="closeModal('signatureModal')" data-i18n="modal.pm_btn_cancel">Hủy bỏ</button>
                 <button type="button" class="btn-primary" onclick="applySignatureToPage()">
                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-                    <span>Chèn chữ ký vào trang</span>
+                    <span data-i18n="modal.sig_btn_apply">Chèn chữ ký vào trang</span>
                 </button>
             </div>
         </div>
@@ -2097,8 +2510,8 @@ if (str_starts_with($requestUri, '/api/')) {
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24" style="stroke: #fff;"><path d="M5 22h14"/><path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 9h-11A2.5 2.5 0 0 0 4.73 13.73L7 17h10l2.27-3.27z"/><path d="M12 9V2"/></svg>
                     </div>
                     <div>
-                        <h3 style="font-size: 1.1rem; font-weight: 700; margin: 0;">Chọn con dấu đóng vào tài liệu</h3>
-                        <p style="font-size: 0.75rem; color: var(--text-muted); margin: 2px 0 0;">Dấu tiêu chuẩn phê duyệt, phân loại bảo mật và xác thực công văn</p>
+                        <h3 style="font-size: 1.1rem; font-weight: 700; margin: 0;" data-i18n="modal.stamp_title">Chọn con dấu đóng vào tài liệu</h3>
+                        <p style="font-size: 0.75rem; color: var(--text-muted); margin: 2px 0 0;" data-i18n="modal.stamp_sub">Dấu tiêu chuẩn phê duyệt, phân loại bảo mật và xác thực công văn</p>
                     </div>
                 </div>
                 <button class="btn-close" onclick="closeModal('stampModal')">
@@ -2114,7 +2527,7 @@ if (str_starts_with($requestUri, '/api/')) {
                             <span class="stamp-date">NGÀY: 23/10/2026</span>
                         </div>
                     </div>
-                    <div class="stamp-desc">Đã phê duyệt (Chính thức)</div>
+                    <div class="stamp-desc" data-i18n="modal.stamp_approved_desc">Đã phê duyệt (Chính thức)</div>
                 </div>
 
                 <div class="stamp-pick-item stamp-draft" onclick="insertStamp('draft')">
@@ -2124,7 +2537,7 @@ if (str_starts_with($requestUri, '/api/')) {
                             <span class="stamp-date">LƯU HÀNH NỘI BỘ</span>
                         </div>
                     </div>
-                    <div class="stamp-desc">Bản nháp thử nghiệm</div>
+                    <div class="stamp-desc" data-i18n="modal.stamp_draft_desc">Bản nháp thử nghiệm</div>
                 </div>
 
                 <div class="stamp-pick-item stamp-secret" onclick="insertStamp('secret')">
@@ -2134,7 +2547,7 @@ if (str_starts_with($requestUri, '/api/')) {
                             <span class="stamp-date">KHÔNG SAO CHÉP</span>
                         </div>
                     </div>
-                    <div class="stamp-desc">Bảo mật / Tuyệt mật</div>
+                    <div class="stamp-desc" data-i18n="modal.stamp_secret_desc">Bảo mật / Tuyệt mật</div>
                 </div>
 
                 <div class="stamp-pick-item stamp-completed" onclick="insertStamp('completed')">
@@ -2144,7 +2557,7 @@ if (str_starts_with($requestUri, '/api/')) {
                             <span class="stamp-date">ĐẠT YÊU CẦU</span>
                         </div>
                     </div>
-                    <div class="stamp-desc">Nghiệm thu hoàn tất</div>
+                    <div class="stamp-desc" data-i18n="modal.stamp_completed_desc">Nghiệm thu hoàn tất</div>
                 </div>
 
                 <div class="stamp-pick-item stamp-certified" onclick="insertStamp('certified')">
@@ -2154,7 +2567,7 @@ if (str_starts_with($requestUri, '/api/')) {
                             <span class="stamp-date">VĂN THƯ ĐÃ DUYỆT</span>
                         </div>
                     </div>
-                    <div class="stamp-desc">Chứng thực bản sao</div>
+                    <div class="stamp-desc" data-i18n="modal.stamp_certified_desc">Chứng thực bản sao</div>
                 </div>
 
                 <div class="stamp-pick-item stamp-void" onclick="insertStamp('void')">
@@ -2164,7 +2577,7 @@ if (str_starts_with($requestUri, '/api/')) {
                             <span class="stamp-date">HẾT HIỆU LỰC</span>
                         </div>
                     </div>
-                    <div class="stamp-desc">Hủy bỏ / Vô hiệu</div>
+                    <div class="stamp-desc" data-i18n="modal.stamp_void_desc">Hủy bỏ / Vô hiệu</div>
                 </div>
             </div>
         </div>
@@ -2177,25 +2590,25 @@ if (str_starts_with($requestUri, '/api/')) {
                 <div class="export-success-icon-wrap">
                     <svg class="svg-icon" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                 </div>
-                <h3 style="font-size: 1.25rem; font-weight: 800; color: #0F172A; margin: 12px 0 4px;">Xuất tệp PDF thành công!</h3>
-                <p style="font-size: 0.82rem; color: #64748B; margin: 0;">Tài liệu đã được biên tập, nhúng vector chuẩn và sẵn sàng tải về</p>
+                <h3 style="font-size: 1.25rem; font-weight: 800; color: #0F172A; margin: 12px 0 4px;" data-i18n="modal.exp_title">Xuất tệp PDF thành công!</h3>
+                <p style="font-size: 0.82rem; color: #64748B; margin: 0;" data-i18n="modal.exp_sub">Tài liệu đã được biên tập, nhúng vector chuẩn và sẵn sàng tải về</p>
             </div>
 
             <div class="export-meta-card">
                 <div class="export-meta-row">
-                    <span class="meta-lbl">Tên tệp:</span>
+                    <span class="meta-lbl" data-i18n="modal.exp_lbl_file">Tên tệp:</span>
                     <strong class="meta-val" id="expDocName">Tai_lieu_bien_tap.pdf</strong>
                 </div>
                 <div class="export-meta-row">
-                    <span class="meta-lbl">Tổng số trang:</span>
+                    <span class="meta-lbl" data-i18n="modal.exp_lbl_pages">Tổng số trang:</span>
                     <strong class="meta-val" id="expDocPages">11 trang</strong>
                 </div>
                 <div class="export-meta-row">
-                    <span class="meta-lbl">Trạng thái:</span>
-                    <span class="status-pill success"><span class="status-dot"></span> Đã hoàn tất 100%</span>
+                    <span class="meta-lbl" data-i18n="modal.exp_lbl_status">Trạng thái:</span>
+                    <span class="status-pill success"><span class="status-dot"></span> <span data-i18n="modal.exp_val_status">Đã hoàn tất 100%</span></span>
                 </div>
                 <div class="export-meta-row">
-                    <span class="meta-lbl">Định dạng xuất:</span>
+                    <span class="meta-lbl" data-i18n="modal.exp_lbl_format">Định dạng xuất:</span>
                     <strong class="meta-val">PDF chuẩn ISO/IEC 32000</strong>
                 </div>
             </div>
@@ -2203,16 +2616,83 @@ if (str_starts_with($requestUri, '/api/')) {
             <div class="export-actions">
                 <a href="#" id="expDownloadBtn" class="btn-primary btn-lg" style="text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 8px;">
                     <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    <span>Tải xuống tệp PDF hoàn chỉnh</span>
+                    <span data-i18n="modal.exp_btn_download">Tải xuống tệp PDF hoàn chỉnh</span>
                 </a>
                 <div style="display: flex; gap: 10px; margin-top: 10px;">
                     <button type="button" class="btn-outline" style="flex: 1;" onclick="viewExportManifest(currentOutputId)">
                         <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-                        <span>Xem bảng đối chiếu</span>
+                        <span data-i18n="modal.exp_btn_manifest">Xem bảng đối chiếu</span>
                     </button>
                     <button type="button" class="btn-secondary" style="flex: 1;" onclick="closeModal('exportSuccessModal')">
-                        <span>Tiếp tục chỉnh sửa</span>
+                        <span data-i18n="modal.exp_btn_continue">Tiếp tục chỉnh sửa</span>
                     </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: XEM NHANH CHI TIẾT TỆP XUẤT (HISTORY PREVIEW MODAL) -->
+    <div id="historyPreviewModal" class="modal-overlay">
+        <div class="modal-box history-preview-box">
+            <div class="modal-header">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div class="action-icon-box blue" style="width: 38px; height: 38px; border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                        <svg class="svg-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                    </div>
+                    <div>
+                        <h3 class="modal-title" id="prevHistTitle" data-i18n="modal.hist_prev_title">Chi tiết tệp xuất</h3>
+                        <p class="modal-sub" id="prevHistSubtitle" data-i18n="modal.hist_prev_sub">Thông số kỹ thuật và cấu trúc tài liệu PDF</p>
+                    </div>
+                </div>
+                <button type="button" class="modal-close" onclick="closeModal('historyPreviewModal')">✕</button>
+            </div>
+
+            <div class="modal-body" style="padding: 20px;">
+                <div class="history-preview-meta-grid">
+                    <div class="meta-item">
+                        <span class="meta-label" data-i18n="modal.hist_lbl_id">Mã định danh:</span>
+                        <strong class="meta-value" id="prevHistId">#--</strong>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label" data-i18n="modal.hist_lbl_file">Tên tệp lưu trữ:</span>
+                        <strong class="meta-value" id="prevHistFilename">--</strong>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label" data-i18n="modal.hist_lbl_pages">Tổng số trang:</span>
+                        <strong class="meta-value" id="prevHistPages">-- trang</strong>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label" data-i18n="modal.hist_lbl_size">Kích thước tệp:</span>
+                        <strong class="meta-value" id="prevHistSize">-- KB</strong>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label" data-i18n="modal.hist_lbl_time">Thời gian xuất:</span>
+                        <strong class="meta-value" id="prevHistTime">--</strong>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label" data-i18n="modal.hist_lbl_std">Tiêu chuẩn xuất bản:</span>
+                        <span class="status-pill success"><span class="status-dot"></span> PDF ISO/IEC 32000-1</span>
+                    </div>
+                </div>
+
+                <div class="history-preview-summary-box">
+                    <h4 style="font-size: 0.85rem; font-weight: 700; color: #1E293B; margin-bottom: 6px;" data-i18n="modal.hist_struct_title">Cấu trúc trang & Nguồn gốc xuất</h4>
+                    <p style="font-size: 0.8rem; color: #64748B; margin-bottom: 12px;" id="prevHistSourceSummary" data-i18n="modal.hist_struct_sub">Tài liệu này được biên soạn từ các trang nguồn với dữ liệu đối chiếu Source Manifest.</p>
+                    <div id="prevHistPageBadges" class="prev-page-badges-container"></div>
+                </div>
+            </div>
+
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; background: #F8FAFC; border-top: 1px solid var(--border);">
+                <button type="button" class="btn-outline" id="prevHistManifestBtn">
+                    <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <span data-i18n="modal.hist_btn_manifest">Xem bảng đối chiếu chi tiết</span>
+                </button>
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" class="btn-secondary" onclick="closeModal('historyPreviewModal')" data-i18n="modal.hist_btn_close">Đóng</button>
+                    <a href="#" id="prevHistDownloadBtn" class="btn-primary" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
+                        <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        <span data-i18n="modal.hist_btn_download">Tải xuống PDF</span>
+                    </a>
                 </div>
             </div>
         </div>
@@ -2221,7 +2701,7 @@ if (str_starts_with($requestUri, '/api/')) {
     <!-- Toast Notifications Container -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="/assets/js/app.js?v=<?= time() ?>"></script>
+    <script src="<?= $baseUrl ?>/assets/js/app.js?v=<?= time() ?>"></script>
     <script>
         function toggleMobileSidebar() {
             const sidebar = document.getElementById('appSidebar');

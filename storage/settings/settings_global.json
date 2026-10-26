@@ -1,0 +1,15 @@
+{
+    "theme": "light",
+    "language": "vi",
+    "density": "comfortable",
+    "auto_collapse_sidebar": false,
+    "notification_sound": true,
+    "preview_dpi": 150,
+    "compression_level": "balanced",
+    "default_orientation": "original",
+    "auto_page_numbers": false,
+    "keep_manifest": true,
+    "auto_cleanup": "24h",
+    "default_password": "",
+    "incognito_mode": false
+}

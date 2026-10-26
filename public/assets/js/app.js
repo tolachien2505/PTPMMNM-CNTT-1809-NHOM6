@@ -5,6 +5,13 @@
 
 let currentOutputId = 1;
 
+function apiUrl(path) {
+    const base = window.BASE_URL || '';
+    if (!path.startsWith('/')) path = '/' + path;
+    return base + path;
+}
+window.apiUrl = apiUrl;
+
 class PDFEditorState {
     constructor() {
         this.pages = [];
@@ -222,15 +229,21 @@ function setSidebarCompact(compact) {
 
 // Lấy view hiện tại từ pathname hoặc chuyển đổi hash cũ sang đường dẫn sạch
 function getPathView() {
+    const base = (window.BASE_URL || '').replace(/^\/+|\/+$/g, '');
     if (window.location.hash && window.location.hash.length > 1) {
         let hashView = window.location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0];
         if (LEGACY_VIEW_MAP[hashView]) hashView = LEGACY_VIEW_MAP[hashView];
         if (VALID_VIEWS.includes(hashView)) {
-            window.history.replaceState({ view: hashView }, '', '/' + hashView);
+            const targetPath = (base ? '/' + base : '') + '/' + hashView;
+            window.history.replaceState({ view: hashView }, '', targetPath);
             return hashView;
         }
     }
-    let cleanPath = window.location.pathname.replace(/^\/+|\/+$/g, '');
+    let pathname = window.location.pathname.replace(/^\/+|\/+$/g, '');
+    if (base && pathname.startsWith(base)) {
+        pathname = pathname.substring(base.length).replace(/^\/+|\/+$/g, '');
+    }
+    let cleanPath = pathname.split('/').filter(Boolean).pop() || 'home';
     if (LEGACY_VIEW_MAP[cleanPath]) cleanPath = LEGACY_VIEW_MAP[cleanPath];
     if (VALID_VIEWS.includes(cleanPath)) {
         return cleanPath;
@@ -264,20 +277,21 @@ function switchView(viewName, eventOrPush = true) {
 
     // Cập nhật trạng thái active sidebar navigation
     document.querySelectorAll('.nav-item').forEach(n => {
-        const itemRoute = n.getAttribute('data-view') || n.getAttribute('href')?.replace(/^\//, '');
+        const itemRoute = n.getAttribute('data-view') || n.getAttribute('href')?.split('/').pop();
         n.classList.toggle('active', itemRoute === viewName);
     });
 
     // Cập nhật trạng thái active mobile bottom navigation
     document.querySelectorAll('.mobile-nav-item').forEach(m => {
-        const itemRoute = m.getAttribute('data-view') || m.getAttribute('href')?.replace(/^\//, '');
+        const itemRoute = m.getAttribute('data-view') || m.getAttribute('href')?.split('/').pop();
         m.classList.toggle('active', itemRoute === viewName);
     });
 
     // Cập nhật URL trình duyệt qua History API: /home, /documents, /editor, /upgrade... (không có #)
     const shouldPush = (typeof eventOrPush === 'boolean') ? eventOrPush : true;
     if (shouldPush) {
-        const targetPath = '/' + viewName;
+        const base = (window.BASE_URL || '').replace(/\/+$/, '');
+        const targetPath = (base ? base : '') + '/' + viewName;
         if (window.location.pathname !== targetPath || window.location.hash) {
             window.history.pushState({ view: viewName }, '', targetPath);
         }
@@ -302,6 +316,8 @@ function switchView(viewName, eventOrPush = true) {
         }
     } else if (viewName === 'history') {
         loadExportHistory();
+    } else if (viewName === 'settings') {
+        loadUserSettings();
     }
 
     // Cuộn mượt đến phần tài liệu nếu chuyển đến /documents
@@ -339,7 +355,12 @@ document.addEventListener('click', (e) => {
     }
 
     if (href.startsWith('/') && !href.startsWith('/api') && !href.startsWith('/storage') && !link.hasAttribute('download') && link.target !== '_blank') {
-        const target = href.replace(/^\/+|\/+$/g, '');
+        let path = href.split('?')[0].split('#')[0];
+        const base = (window.BASE_URL || '').replace(/\/+$/, '');
+        if (base && path.startsWith(base)) {
+            path = path.substring(base.length);
+        }
+        const target = path.replace(/^\/+|\/+$/g, '');
         if (VALID_VIEWS.includes(target)) {
             e.preventDefault();
             switchView(target, true);
@@ -349,16 +370,11 @@ document.addEventListener('click', (e) => {
 
 // Tự động chuẩn hóa URL và đồng bộ trạng thái Route khi tải trang
 function initCleanRouting() {
-    let targetView = 'home';
-    if (window.location.hash && window.location.hash.length > 1) {
-        let rawHash = window.location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0];
-        if (LEGACY_VIEW_MAP[rawHash]) rawHash = LEGACY_VIEW_MAP[rawHash];
-        if (VALID_VIEWS.includes(rawHash)) targetView = rawHash;
-        window.history.replaceState({ view: targetView }, '', '/' + targetView);
-    } else {
-        let currentPath = window.location.pathname.replace(/^\/+|\/+$/g, '');
-        if (LEGACY_VIEW_MAP[currentPath]) currentPath = LEGACY_VIEW_MAP[currentPath];
-        if (VALID_VIEWS.includes(currentPath)) targetView = currentPath;
+    let targetView = getPathView();
+    const base = (window.BASE_URL || '').replace(/\/+$/, '');
+    const targetPath = (base ? base : '') + '/' + targetView;
+    if (window.location.hash) {
+        window.history.replaceState({ view: targetView }, '', targetPath);
     }
     switchView(targetView, false);
 }
@@ -506,81 +522,1660 @@ async function executeStandardSplit() {
     }
 }
 
-// Tải lịch sử xuất
+// =========================================================
+// LỊCH SỬ XUẤT (EXPORT HISTORY & MANIFEST ENGINE)
+// =========================================================
+let rawExportHistory = [];
+
 async function loadExportHistory() {
     const tbody = document.getElementById('historyTableBody');
     if (!tbody) return;
 
-    try {
-        const res = await fetch('/api/export/history');
-        const data = await res.json();
-        tbody.innerHTML = '';
+    tbody.innerHTML = `
+        <tr>
+            <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                <div class="spinner-small" style="margin: 0 auto 10px;"></div>
+                <span>Đang tải lịch sử xuất...</span>
+            </td>
+        </tr>
+    `;
 
-        if (data.history && data.history.length > 0) {
-            data.history.forEach(item => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td>#${item.id}</td>
-                    <td>
-                        <div class="file-cell">
-                            <div class="file-icon-pdf">PDF</div>
-                            <span>${item.filename}</span>
-                        </div>
-                    </td>
-                    <td>${item.total_pages} trang</td>
-                    <td>${Math.round(item.file_size / 1024)} KB</td>
-                    <td>${item.created_at}</td>
-                    <td>
-                        <div class="actions-cell">
-                            <a href="/api/download?file=${encodeURIComponent(item.filename)}" class="btn-table-action" title="Tải xuống">
-                                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                            </a>
-                            <button class="btn-table-action" title="Xem bảng đối chiếu" onclick="openManifestModal(${item.id})">
-                                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                                <span style="font-size: 0.75rem; margin-left: 4px;">Manifest</span>
-                            </button>
-                        </div>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
+    try {
+        const res = await fetch(apiUrl('/api/export/history'));
+        const data = await res.json();
+        rawExportHistory = Array.isArray(data.history) ? data.history : [];
+
+        updateHistoryMetrics(rawExportHistory);
+        filterExportHistory();
+    } catch (e) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="7" style="text-align: center; color: #EF4444; padding: 24px;">
+                    Lỗi khi tải dữ liệu lịch sử xuất. Vui lòng kiểm tra kết nối.
+                </td>
+            </tr>
+        `;
+    }
+}
+
+function updateHistoryMetrics(items) {
+    const elFiles = document.getElementById('historyMetricFiles');
+    const elPages = document.getElementById('historyMetricPages');
+    const elSize = document.getElementById('historyMetricSize');
+    const elRecent = document.getElementById('historyMetricRecent');
+
+    if (!elFiles) return;
+
+    const totalFiles = items.length;
+    let totalPages = 0;
+    let totalBytes = 0;
+
+    items.forEach(item => {
+        totalPages += parseInt(item.total_pages || 0, 10);
+        totalBytes += parseInt(item.file_size || 0, 10);
+    });
+
+    elFiles.innerText = totalFiles.toLocaleString('vi-VN');
+    elPages.innerText = totalPages.toLocaleString('vi-VN');
+
+    if (totalBytes > 1024 * 1024) {
+        elSize.innerText = (totalBytes / (1024 * 1024)).toFixed(2) + ' MB';
+    } else {
+        elSize.innerText = Math.round(totalBytes / 1024).toLocaleString('vi-VN') + ' KB';
+    }
+
+    if (items.length > 0 && items[0].created_at) {
+        const rawDate = items[0].created_at;
+        const d = new Date(rawDate.replace(' ', 'T'));
+        if (!isNaN(d.getTime())) {
+            const timeStr = d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+            const dateStr = d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+            elRecent.innerText = `${timeStr} (${dateStr})`;
         } else {
-            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #64748B; padding: 20px;">Chưa có tệp nào được xuất. Hãy thực hiện Ghép hoặc Tách PDF để xem lịch sử.</td></tr>`;
+            elRecent.innerText = items[0].created_at;
+        }
+    } else {
+        elRecent.innerText = 'Chưa có';
+    }
+}
+
+function filterExportHistory() {
+    const tbody = document.getElementById('historyTableBody');
+    if (!tbody) return;
+
+    const searchInput = document.getElementById('historySearchInput');
+    const clearBtn = document.getElementById('historySearchClear');
+    const typeFilter = document.getElementById('historyTypeFilter');
+    const sortFilter = document.getElementById('historySortFilter');
+    const countNotice = document.getElementById('historyCountNotice');
+
+    const query = (searchInput ? searchInput.value : '').trim().toLowerCase();
+    const selectedType = typeFilter ? typeFilter.value : 'all';
+    const selectedSort = sortFilter ? sortFilter.value : 'date_desc';
+
+    if (clearBtn) {
+        clearBtn.style.display = query ? 'block' : 'none';
+    }
+
+    let filtered = rawExportHistory.filter(item => {
+        if (query) {
+            const matchName = (item.filename || '').toLowerCase().includes(query);
+            const matchId = ('#' + item.id).includes(query) || String(item.id).includes(query);
+            if (!matchName && !matchId) return false;
+        }
+
+        if (selectedType !== 'all') {
+            const fn = (item.filename || '').toLowerCase();
+            if (selectedType === 'merge' && !fn.includes('ghep') && !fn.includes('merge')) return false;
+            if (selectedType === 'split' && !fn.includes('tach') && !fn.includes('split') && !fn.includes('nhom')) return false;
+            if (selectedType === 'edit' && !fn.includes('bien_tap') && !fn.includes('edit') && !fn.includes('doc_')) return false;
+        }
+
+        return true;
+    });
+
+    filtered.sort((a, b) => {
+        if (selectedSort === 'date_desc') return b.id - a.id;
+        if (selectedSort === 'date_asc') return a.id - b.id;
+        if (selectedSort === 'size_desc') return (b.file_size || 0) - (a.file_size || 0);
+        if (selectedSort === 'pages_desc') return (b.total_pages || 0) - (a.total_pages || 0);
+        return 0;
+    });
+
+    const isEn = (document.documentElement.getAttribute('lang') || 'vi') === 'en';
+
+    if (countNotice) {
+        countNotice.innerText = isEn
+            ? `Showing ${filtered.length} / ${rawExportHistory.length} exported files`
+            : `Hiển thị ${filtered.length} / ${rawExportHistory.length} tệp xuất`;
+    }
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 48px 20px;">
+                    <div style="margin-bottom: 12px;">
+                        <svg class="svg-icon svg-icon-lg" style="stroke: #94A3B8; width: 44px; height: 44px;" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                    </div>
+                    <h4 style="font-size: 1rem; font-weight: 700; color: #334155; margin-bottom: 6px;">${isEn ? 'No exported files found' : 'Không tìm thấy tệp xuất nào'}</h4>
+                    <p style="font-size: 0.85rem; color: #64748B; margin-bottom: 16px;">${query ? (isEn ? 'No files match your search keywords.' : 'Không có tệp nào khớp với từ khóa tìm kiếm.') : (isEn ? 'No documents have been exported yet.' : 'Chưa có tài liệu nào được xuất từ hệ thống.')}</p>
+                    <a href="/editor" class="btn-primary btn-sm" onclick="switchView('editor', event)" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
+                        <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                        <span>${isEn ? 'Open PDF Editor' : 'Mở Trình Chỉnh sửa PDF'}</span>
+                    </a>
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    tbody.innerHTML = '';
+    filtered.forEach(item => {
+        const tr = document.createElement('tr');
+        
+        const fn = (item.filename || '').toLowerCase();
+        let badgeType = isEn
+            ? '<span class="status-pill info"><span class="status-dot"></span> Merge PDF</span>'
+            : '<span class="status-pill info"><span class="status-dot"></span> Ghép PDF</span>';
+        if (fn.includes('tach') || fn.includes('split') || fn.includes('nhom')) {
+            badgeType = isEn
+                ? '<span class="status-pill purple"><span class="status-dot"></span> Split PDF</span>'
+                : '<span class="status-pill purple"><span class="status-dot"></span> Tách PDF</span>';
+        } else if (fn.includes('bien_tap') || fn.includes('edit')) {
+            badgeType = isEn
+                ? '<span class="status-pill success"><span class="status-dot"></span> Editor</span>'
+                : '<span class="status-pill success"><span class="status-dot"></span> Biên tập</span>';
+        }
+
+        const sizeFormatted = item.file_size > 1024 * 1024
+            ? (item.file_size / (1024 * 1024)).toFixed(2) + ' MB'
+            : Math.round(item.file_size / 1024) + ' KB';
+
+        const downloadTitle = isEn ? 'Download PDF' : 'Tải xuống PDF';
+        const previewTitle = isEn ? 'Quick preview info' : 'Xem nhanh thông tin';
+        const manifestTitle = isEn ? 'Source Manifest audit trail' : 'Tra cứu bảng đối chiếu nguồn (Manifest)';
+        const deleteTitle = isEn ? 'Delete this record' : 'Xóa bản ghi này';
+
+        tr.innerHTML = `
+            <td><span class="history-id-badge">#${item.id}</span></td>
+            <td>
+                <div class="file-cell">
+                    <div class="file-icon-pdf">PDF</div>
+                    <div class="file-info-col">
+                        <span class="file-name-text" title="${item.filename}">${item.filename}</span>
+                        <span class="file-iso-badge">ISO/IEC 32000</span>
+                    </div>
+                </div>
+            </td>
+            <td>${badgeType}</td>
+            <td><strong>${item.total_pages}</strong> ${isEn ? 'pages' : 'trang'}</td>
+            <td>${sizeFormatted}</td>
+            <td><span class="history-time-text">${item.created_at || (isEn ? 'Just now' : 'Vừa xong')}</span></td>
+            <td>
+                <div class="actions-cell history-actions-cell">
+                    <a href="${apiUrl('/api/download?file=' + encodeURIComponent(item.filename))}" class="btn-table-action" title="${downloadTitle}">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </a>
+                    <button type="button" class="btn-table-action" title="${previewTitle}" onclick="openHistoryPreview(${item.id})">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                    <button type="button" class="btn-table-action" title="${manifestTitle}" onclick="openManifestModal(${item.id})">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    </button>
+                    <button type="button" class="btn-table-action delete-action" title="${deleteTitle}" onclick="deleteHistoryItem(${item.id})">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                </div>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function clearHistorySearch() {
+    const input = document.getElementById('historySearchInput');
+    if (input) {
+        input.value = '';
+        filterExportHistory();
+    }
+}
+
+async function openHistoryPreview(outputId) {
+    const item = rawExportHistory.find(h => h.id == outputId);
+    if (!item) return;
+
+    const isEn = (document.documentElement.getAttribute('lang') || 'vi') === 'en';
+    const elId = document.getElementById('prevHistId');
+    const elName = document.getElementById('prevHistFilename');
+    const elPages = document.getElementById('prevHistPages');
+    const elSize = document.getElementById('prevHistSize');
+    const elTime = document.getElementById('prevHistTime');
+    const elDl = document.getElementById('prevHistDownloadBtn');
+    const elManifestBtn = document.getElementById('prevHistManifestBtn');
+    const elBadges = document.getElementById('prevHistPageBadges');
+
+    if (elId) elId.innerText = '#' + item.id;
+    if (elName) elName.innerText = item.filename;
+    if (elPages) elPages.innerText = item.total_pages + (isEn ? ' pages' : ' trang');
+    if (elSize) {
+        elSize.innerText = item.file_size > 1024 * 1024
+            ? (item.file_size / (1024 * 1024)).toFixed(2) + ' MB'
+            : Math.round(item.file_size / 1024) + ' KB';
+    }
+    if (elTime) elTime.innerText = item.created_at || (isEn ? 'Unknown' : 'Không xác định');
+
+    if (elDl) {
+        elDl.href = apiUrl('/api/download?file=' + encodeURIComponent(item.filename));
+    }
+    if (elManifestBtn) {
+        elManifestBtn.onclick = () => {
+            closeModal('historyPreviewModal');
+            openManifestModal(item.id);
+        };
+    }
+
+    if (elBadges) {
+        elBadges.innerHTML = `<span style="font-size: 0.75rem; color: #64748B;">${isEn ? 'Checking page source manifest...' : 'Đang kiểm tra bảng đối chiếu trang...'}</span>`;
+        try {
+            const res = await fetch(apiUrl(`/api/export/manifest?id=${item.id}`));
+            const data = await res.json();
+            if (data.status === 'success' && Array.isArray(data.manifest) && data.manifest.length > 0) {
+                elBadges.innerHTML = '';
+                data.manifest.forEach(m => {
+                    const badge = document.createElement('span');
+                    badge.className = 'history-source-page-tag';
+                    badge.innerHTML = `<strong>${isEn ? 'P' : 'T'}${m.output_page}</strong> ← ${m.source_doc} (${isEn ? 'page' : 'trang'} ${m.source_page}, ${m.rotation}°)`;
+                    elBadges.appendChild(badge);
+                });
+            } else {
+                elBadges.innerHTML = `<span style="font-size: 0.75rem; color: #94A3B8;">${isEn ? 'Standalone document, no multi-source merge used.' : 'Tài liệu độc lập, không sử dụng ghép đa nguồn.'}</span>`;
+            }
+        } catch (e) {
+            elBadges.innerHTML = `<span style="font-size: 0.75rem; color: #94A3B8;">${isEn ? 'No extended source manifest data available.' : 'Không có dữ liệu đối chiếu nguồn mở rộng.'}</span>`;
+        }
+    }
+
+    openModal('historyPreviewModal');
+}
+
+async function deleteHistoryItem(outputId) {
+    const isEn = (document.documentElement.getAttribute('lang') || 'vi') === 'en';
+    if (!confirm(isEn ? `Are you sure you want to delete export file #${outputId}?` : `Bạn có chắc chắn muốn xóa bản ghi tệp xuất #${outputId}? Tệp này sẽ bị xóa khỏi lịch sử.`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch(apiUrl('/api/export/delete'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: outputId })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(isEn ? '✓ Export record deleted successfully!' : '✓ Đã xóa bản ghi tệp xuất thành công!', 'success');
+            loadExportHistory();
+        } else {
+            showToast(`${isEn ? 'Error:' : 'Lỗi:'} ${data.message}`, 'error');
         }
     } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #EF4444; padding: 20px;">Lỗi tải dữ liệu lịch sử.</td></tr>`;
+        showToast(isEn ? 'Error calling delete API.' : 'Lỗi khi gọi API xóa tệp xuất.', 'error');
+    }
+}
+
+async function clearAllHistory() {
+    const isEn = (document.documentElement.getAttribute('lang') || 'vi') === 'en';
+    if (!confirm(isEn ? 'WARNING: Are you sure you want to clear ALL export history and files? This action cannot be undone!' : 'CẢNH BÁO: Bạn có chắc chắn muốn xóa TOÀN BỘ lịch sử xuất và các tệp PDF đã lưu? Thao tác này không thể hoàn tác!')) {
+        return;
+    }
+
+    try {
+        const res = await fetch(apiUrl('/api/export/clear-all'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(isEn ? '✓ Export history cleared completely.' : '✓ Đã xóa sạch toàn bộ lịch sử xuất.', 'success');
+            loadExportHistory();
+        } else {
+            showToast(`${isEn ? 'Error:' : 'Lỗi:'} ${data.message}`, 'error');
+        }
+    } catch (e) {
+        showToast(isEn ? 'Error clearing export history.' : 'Lỗi khi dọn dẹp lịch sử xuất.', 'error');
     }
 }
 
 // Mở modal đối chiếu Source Manifest
 async function openManifestModal(outputId) {
+    const isEn = (document.documentElement.getAttribute('lang') || 'vi') === 'en';
     const tbody = document.getElementById('manifestTableBody');
     const title = document.getElementById('manifestModalTitle');
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">Đang tải...</td></tr>';
+    if (!tbody) return;
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;">${isEn ? 'Loading manifest audit trail...' : 'Đang tải dữ liệu đối chiếu...'}</td></tr>`;
     openModal('manifestModal');
 
     try {
-        const res = await fetch(`/api/export/manifest?id=${outputId}`);
+        const res = await fetch(apiUrl(`/api/export/manifest?id=${outputId}`));
         const data = await res.json();
         if (data.status === 'success' && data.manifest) {
-            title.innerText = `Bảng đối chiếu nguồn: ${data.filename} (${data.total_pages} trang)`;
+            if (title) title.innerText = isEn ? `Source Manifest: ${data.filename} (${data.total_pages} pages)` : `Bảng đối chiếu nguồn: ${data.filename} (${data.total_pages} trang)`;
             tbody.innerHTML = '';
             data.manifest.forEach(item => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td><strong>Trang ${item.output_page}</strong></td>
+                    <td><strong>${isEn ? 'Page' : 'Trang'} ${item.output_page}</strong></td>
                     <td>${item.source_doc}</td>
-                    <td>Trang ${item.source_page}</td>
+                    <td>${isEn ? 'Page' : 'Trang'} ${item.source_page}</td>
                     <td><span class="pill-badge badge-info">${item.label || '-'}</span></td>
                     <td>${item.rotation}°</td>
                 `;
                 tbody.appendChild(tr);
             });
         } else {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#EF4444;">Không có dữ liệu đối chiếu nguồn.</td></tr>';
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:#EF4444;">${isEn ? 'No source manifest data found.' : 'Không có dữ liệu đối chiếu nguồn.'}</td></tr>`;
         }
     } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#EF4444;">Lỗi khi tải bảng đối chiếu.</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:#EF4444;">${isEn ? 'Error loading source manifest.' : 'Lỗi khi tải bảng đối chiếu.'}</td></tr>`;
+    }
+}
+
+// =========================================================
+// CÀI ĐẶT HỆ THỐNG & ĐA NGÔN NGỮ (SYSTEM SETTINGS & I18N LOGIC)
+// =========================================================
+
+const APP_I18N = {
+    vi: {
+        // Brand & Navigation
+        'brand.sub': 'Sắp xếp - Ghép - Tách - Xử lý PDF',
+        'nav.home': 'Trang chủ',
+        'nav.documents': 'Quản lý tài liệu',
+        'nav.editor': 'Chỉnh sửa PDF',
+        'nav.upgrade': 'Nâng Cấp',
+        'nav.history': 'Lịch sử xuất',
+        'nav.settings': 'Cài đặt',
+        'nav.storage': 'Dung lượng lưu trữ',
+        'nav.upgrade_btn': 'Nâng cấp',
+        'nav.guest': 'Khách vãng lai',
+        'nav.guest_status': 'Chưa đăng nhập',
+        'nav.guest_login': 'Đăng nhập',
+        'nav.guest_register': 'Đăng ký',
+        'topbar.search_placeholder': 'Tìm kiếm tài liệu, tệp...',
+        'topbar.menu_account': 'Thông tin tài khoản',
+        'topbar.menu_upgrade': 'Nâng cấp Gói dịch vụ',
+        'topbar.menu_settings': 'Cài đặt hệ thống',
+        'topbar.menu_history': 'Lịch sử xuất tệp',
+        'topbar.menu_logout': 'Đăng xuất',
+        'topbar.plan_label': 'Gói dịch vụ:',
+        'topbar.plan_pro_unlock': 'Mở khóa toàn bộ tính năng cao cấp',
+        'topbar.plan_free_limit': 'Dung lượng 1GB • Ghép tách tiêu chuẩn',
+        'topbar.plan_btn_pro': 'Chi tiết gói',
+        'topbar.plan_btn_upgrade': 'Nâng cấp PRO',
+
+        // View Home: Hero Banner
+        'home.hero_title': 'Xử lý PDF nhanh chóng,<br>linh hoạt và dễ dàng',
+        'home.hero_desc': 'Ghép, tách, sắp xếp, xoay và chỉnh sửa tài liệu PDF chỉ với vài thao tác đơn giản.',
+        'home.badge_secure': 'An toàn (Bảo mật dữ liệu)',
+        'home.badge_fast': 'Nhanh chóng (Xử lý trong vài giây)',
+        'home.badge_easy': 'Dễ sử dụng (Giao diện trực quan)',
+
+        // View Home: Quick Actions 2x2
+        'home.qa_editor_title': 'Chỉnh sửa PDF',
+        'home.qa_editor_desc': 'Thêm chữ, vẽ, ký số, con dấu & ghi chú',
+        'home.qa_pages_title': 'Quản lý trang PDF',
+        'home.qa_pages_desc': 'Sắp xếp, xoay góc, nhân bản & xóa trang',
+        'home.qa_merge_title': 'Ghép & Tách tài liệu',
+        'home.qa_merge_desc': 'Nhập file ghép nối hoặc trích xuất nhóm trang',
+        'home.qa_pro_title': 'Nâng cấp gói PRO',
+        'home.qa_pro_desc': 'Dung lượng không giới hạn & công cụ VIP',
+
+        // View Home: Documents Toolbar & Tabs
+        'home.tab_doc_list': 'Danh sách tài liệu',
+        'home.tab_processing': 'Đang xử lý (2)',
+        'home.btn_upload': 'Tải lên tệp PDF',
+
+        // View Home: Document Cards Status
+        'home.status_completed': 'Hoàn tất',
+        'home.status_processed': 'Đã xử lý',
+        'home.status_error': 'Lỗi',
+        'home.status_processing': 'Đang xử lý',
+
+        // View Home: Recent Documents Table
+        'home.recent_title': 'Tài liệu gần đây',
+        'home.recent_view_all': 'Xem tất cả →',
+        'home.th_filename': 'Tên tệp',
+        'home.th_pages': 'Số trang',
+        'home.th_size': 'Dung lượng',
+        'home.th_created': 'Ngày tạo',
+        'home.th_status': 'Trạng thái',
+        'home.th_actions': 'Thao tác',
+        'home.table_showing': 'Hiển thị 1 - 5 / 6 tài liệu',
+        'home.table_per_page': '10 / trang',
+
+        // View Home: Stats & Guide & Promo
+        'home.stats_title': 'Thống kê nhanh',
+        'home.stat_total_docs': 'Tổng số tài liệu',
+        'home.stat_total_pages': 'Tổng số trang',
+        'home.stat_processed': 'Đã xử lý',
+        'home.stat_errors': 'Lỗi',
+        'home.guide_title': 'Hướng dẫn sử dụng',
+        'home.guide_step1': 'Tải lên nhiều tệp PDF',
+        'home.guide_step2': 'Chọn, sắp xếp, xoay trang',
+        'home.guide_step3': 'Xem trước và kiểm tra kế hoạch',
+        'home.guide_step4': 'Ghép hoặc tách tài liệu',
+        'home.guide_step5': 'Tải xuống kết quả',
+        'home.promo_title': 'Làm việc hiệu quả hơn<br>với PDF Manager',
+        'home.promo_desc': 'Tối ưu hóa tài liệu học tập và hồ sơ tốt nghiệp dễ dàng.',
+        'home.promo_btn': 'Xem chi tiết',
+
+        // View Editor: Upload State
+        'editor.upload_hero_title': 'Chỉnh sửa tệp PDF trực tuyến chuyên nghiệp',
+        'editor.upload_hero_subtitle': 'Thêm văn bản, vẽ tự do, ký số điện tử, đóng dấu phê duyệt và sắp xếp trang toàn diện',
+        'editor.dropzone_title': 'Kéo & Thả tệp PDF của bạn vào đây',
+        'editor.dropzone_sub': 'hoặc bấm vào khung để duyệt tệp từ máy tính',
+        'editor.btn_upload_hero': 'Chọn tệp PDF tải lên',
+        'editor.dropzone_limits': 'Hỗ trợ PDF tối đa 50 MB • Xử lý bảo mật an toàn 100%',
+        'editor.sample_divider': 'HOẶC CHỌN TÀI LIỆU CÓ SẴN ĐỂ CHỈNH SỬA NGAY',
+        'editor.sample1_meta': '11 trang • Báo cáo nghiên cứu',
+        'editor.sample2_meta': '6 trang • Đề cương học phần',
+        'editor.sample3_meta': '15 trang • Luận văn đồ án',
+
+        // View Editor: Ribbon Toolbar
+        'editor.tool_add_text': 'Thêm văn bản',
+        'editor.tool_edit_text': 'Chỉnh sửa văn bản',
+        'editor.tool_sign': 'Ký tên',
+        'editor.tool_draw': 'Vẽ',
+        'editor.tool_shapes': 'Đường thẳng',
+        'editor.shape_line': 'Đường thẳng',
+        'editor.shape_arrow': 'Mũi tên',
+        'editor.shape_rect': 'Hình chữ nhật',
+        'editor.shape_circle': 'Hình tròn',
+        'editor.shape_polygon': 'Đa giác',
+        'editor.tool_highlight': 'Tô sáng',
+        'editor.tool_image': 'Hình ảnh',
+        'editor.tool_stamp': 'Con dấu',
+        'editor.tool_link': 'Liên kết',
+        'editor.tool_note': 'Ghi chú',
+        'editor.btn_switch_file': 'Đổi tệp',
+        'editor.btn_page_manager': 'Quản lý trang',
+        'editor.btn_finish': 'Hoàn thành',
+        'editor.colors_label': 'Màu sắc:',
+        'editor.stickers_label': 'Biểu tượng:',
+        'editor.stroke_label': 'Cỡ chữ/nét:',
+        'editor.font_12': '12 px (Nhỏ)',
+        'editor.font_14': '14 px (Chuẩn)',
+        'editor.font_18': '18 px (Vừa)',
+        'editor.font_24': '24 px (Lớn)',
+        'editor.font_32': '32 px (Tiêu đề)',
+        'editor.strip_title': 'Trang tài liệu',
+        'editor.btn_add_page': 'Thêm trang',
+        'editor.opt_blank_page': 'Trang trắng mới',
+        'editor.opt_import_file': 'Nhập từ tệp tin...',
+        'editor.floating_page_label': 'Trang:',
+
+        // View Upgrade: Pricing
+        'upgrade.pill_badge': '✨ Nâng cấp trải nghiệm tài liệu của bạn',
+        'upgrade.hero_title': 'Chọn gói dịch vụ phù hợp với nhu cầu của bạn',
+        'upgrade.hero_subtitle': 'Tăng tốc xử lý tài liệu học tập, đồ án tốt nghiệp và hồ sơ nghiên cứu không giới hạn với sức mạnh của PDF Manager.',
+        'upgrade.monthly': 'Thanh toán Hàng tháng',
+        'upgrade.yearly': 'Hàng năm',
+        'upgrade.discount': 'Tiết kiệm 20% 🎉',
+        'upgrade.free_name': 'Miễn phí (FREE)',
+        'upgrade.free_desc': 'Dành cho sinh viên và nhu cầu đọc, sắp xếp tài liệu cơ bản.',
+        'upgrade.free_period': '/ vĩnh viễn',
+        'upgrade.free_f1': 'Tối đa 5 tài liệu / ngày',
+        'upgrade.free_f2': 'Dung lượng lưu trữ 1 GB',
+        'upgrade.free_f3': 'Trình chỉnh sửa văn bản cơ bản',
+        'upgrade.free_f4': 'Ghép & tách tài liệu tiêu chuẩn',
+        'upgrade.free_f5': 'Không giới hạn số trang xử lý',
+        'upgrade.free_f6': 'Xử lý siêu tốc không watermark',
+        'upgrade.free_f7': 'Ký số & xác thực bảo mật',
+        'upgrade.btn_using': 'Đang sử dụng',
+        'upgrade.btn_switch_free': 'Chuyển về gói FREE',
+        'upgrade.pro_ribbon': '🔥 PHỔ BIẾN NHẤT',
+        'upgrade.pro_name': 'Chuyên nghiệp (PRO)',
+        'upgrade.pro_desc': 'Dành cho sinh viên đồ án, nghiên cứu sinh và giảng viên cần xử lý cường độ cao.',
+        'upgrade.pro_period': '/ tháng',
+        'upgrade.pro_f1': 'Không giới hạn số lượng tài liệu',
+        'upgrade.pro_f2': 'Dung lượng không giới hạn (Cloud SSD)',
+        'upgrade.pro_f3': 'Trình biên tập trực quan nâng cao 100%',
+        'upgrade.pro_f4': 'Trình quản lý trang thông minh (Kéo thả, xoay)',
+        'upgrade.pro_f5': 'Chữ ký điện tử & Ghi chú đóng dấu chuyên nghiệp',
+        'upgrade.pro_f6': 'Xử lý nhanh gấp 5 lần (Ưu tiên hàng đợi)',
+        'upgrade.pro_f7': 'Xuất file sạch đẹp, không watermark',
+        'upgrade.pro_f8': 'Hỗ trợ kỹ thuật ưu tiên 24/7',
+        'upgrade.btn_pro_current': '⭐ Đang sử dụng gói PRO',
+        'upgrade.btn_pro_cta': 'Nâng cấp PRO ngay',
+        'upgrade.ent_name': 'Doanh nghiệp / Khoa viện',
+        'upgrade.ent_desc': 'Dành cho nhóm nghiên cứu lớn, phòng ban hoặc toàn trường.',
+        'upgrade.ent_period': '/ tháng',
+        'upgrade.ent_f1': 'Tất cả quyền lợi gói PRO',
+        'upgrade.ent_f2': 'Quản lý tài khoản nhóm (Tối đa 25 thành viên)',
+        'upgrade.ent_f3': 'Phân quyền tài liệu & Thư mục dùng chung',
+        'upgrade.ent_f4': 'REST API tích hợp trực tiếp vào hệ thống trường',
+        'upgrade.ent_f5': 'Nhật ký kiểm toán minh bạch (Audit Log)',
+        'upgrade.ent_f6': 'Quản lý viên hỗ trợ riêng (Dedicated Manager)',
+        'upgrade.btn_ent_current': 'Đang sử dụng Enterprise',
+        'upgrade.btn_ent_cta': 'Nâng cấp Enterprise',
+        'upgrade.cmp_title': 'Bảng so sánh chi tiết tính năng',
+        'upgrade.cmp_th_feature': 'Tính năng',
+        'upgrade.cmp_th_free': 'Miễn phí (FREE)',
+        'upgrade.cmp_th_pro': 'Chuyên nghiệp (PRO)',
+        'upgrade.cmp_th_ent': 'Doanh nghiệp',
+        'upgrade.cmp_f1': 'Số lượng tài liệu xử lý',
+        'upgrade.cmp_f1_free': '5 tài liệu / ngày',
+        'upgrade.cmp_unlimited': 'Không giới hạn',
+        'upgrade.cmp_f2': 'Dung lượng lưu trữ đám mây',
+        'upgrade.cmp_f2_free': '1 GB',
+        'upgrade.cmp_f3': 'Trình biên tập PDFaid (Văn bản, Bút vẽ, Con dấu)',
+        'upgrade.cmp_basic': 'Cơ bản',
+        'upgrade.cmp_full': '✓ Đầy đủ công cụ',
+        'upgrade.cmp_f4': 'Trình quản lý trang (Xoay, Sắp xếp, Tách, Nhập)',
+        'upgrade.cmp_f4_free': 'Tối đa 10 trang',
+        'upgrade.cmp_f4_pro': '✓ Không giới hạn trang',
+        'upgrade.cmp_f5': 'Bảng đối chiếu nguồn tài liệu (Manifest)',
+        'upgrade.cmp_f5_pro': '✓ Chi tiết từng trang',
+        'upgrade.cmp_f6': 'Tốc độ xử lý hàng đợi',
+        'upgrade.cmp_standard': 'Tiêu chuẩn',
+        'upgrade.cmp_5x': 'Nhanh gấp 5 lần',
+        'upgrade.cmp_highest': 'Ưu tiên cao nhất',
+        'upgrade.cmp_f7': 'API & Quản lý nhóm đa người dùng',
+        'upgrade.cmp_available': '✓ Có sẵn',
+        'upgrade.faq_title': 'Câu hỏi thường gặp',
+        'upgrade.faq_q1': 'Tôi có thể hủy hoặc thay đổi gói bất cứ lúc nào không?',
+        'upgrade.faq_a1': 'Hoàn toàn có thể. Bạn có thể nâng cấp, hạ cấp hoặc hủy gói bất kỳ lúc nào ngay trong phần Cài đặt tài khoản. Không có phụ phí phát sinh nào.',
+        'upgrade.faq_q2': 'Phương thức thanh toán nào được hỗ trợ?',
+        'upgrade.faq_a2': 'Chúng tôi hỗ trợ chuyển khoản ngân hàng QR Code (VietQR / Napas 247), ví MoMo, ZaloPay, thẻ tín dụng / ghi nợ nội địa và quốc tế (Visa, Mastercard).',
+        'upgrade.faq_q3': 'Dữ liệu và tài liệu PDF của tôi có được bảo mật không?',
+        'upgrade.faq_a3': 'Tất cả tài liệu được mã hóa truyền tải theo chuẩn SSL/TLS và lưu trữ an toàn trong phân vùng riêng biệt của tài khoản bạn. Dữ liệu của bạn không bao giờ được chia sẻ với bất kỳ bên thứ ba nào.',
+
+        // View History
+        'history.badge': 'Lịch sử xuất & Bảng đối chiếu',
+        'history.badge_sub': 'Nhật ký & Tra cứu xuất bản',
+        'history.title': 'Lịch sử xuất',
+        'history.desc': 'Quản lý và tra cứu tất cả các tệp PDF đã xuất, tải lại tài liệu và kiểm tra cấu trúc trang đối chiếu nguồn.',
+        'history.btn_refresh': 'Làm mới',
+        'history.btn_clear': 'Xóa lịch sử',
+        'history.stat_total': 'Tổng tệp đã xuất',
+        'history.stat_pages': 'Tổng số trang xử lý',
+        'history.stat_size': 'Dung lượng đã tạo',
+        'history.stat_latest': 'Lần xuất gần nhất',
+        'history.search_placeholder': 'Tìm theo tên tệp xuất hoặc mã #ID...',
+        'history.btn_clear_all': 'Dọn dẹp toàn bộ',
+        'history.filter_type_label': 'Loại tác vụ:',
+        'history.filter_sort_label': 'Sắp xếp:',
+        'history.type_all': 'Tất cả loại tác vụ',
+        'history.type_merge': 'Ghép tài liệu (Merge)',
+        'history.type_split': 'Tách tài liệu (Split)',
+        'history.type_edit': 'Biên tập chỉnh sửa',
+        'history.sort_date_desc': 'Mới nhất trước',
+        'history.sort_date_asc': 'Cũ nhất trước',
+        'history.sort_size_desc': 'Dung lượng lớn nhất',
+        'history.sort_pages_desc': 'Nhiều trang nhất',
+        'history.th_id': 'Mã #ID',
+        'history.th_file': 'Tên tệp xuất & Định dạng',
+        'history.th_action': 'Tác vụ',
+        'history.th_pages': 'Số trang',
+        'history.th_size': 'Dung lượng',
+        'history.th_created': 'Thời gian tạo',
+        'history.th_ops': 'Thao tác nhanh',
+
+        // View Settings
+        'settings.badge': 'Cấu hình & Tùy biến',
+        'settings.title': 'Cài đặt',
+        'settings.desc': 'Tùy biến môi trường làm việc, chất lượng xử lý tệp PDF, chính sách bảo mật dữ liệu và quản lý gói tài khoản.',
+        'settings.btn_reset': 'Khôi phục mặc định',
+        'settings.btn_save': 'Lưu thiết lập',
+        'settings.btn_save_all': 'Lưu tất cả thiết lập',
+        'settings.tab_appearance': 'Giao diện & Trải nghiệm',
+        'settings.tab_engine': 'Công cụ xử lý PDF',
+        'settings.tab_security': 'Bảo mật & Lưu trữ',
+        'settings.tab_account': 'Tài khoản & Gói SaaS',
+        'settings.theme_card_title': 'Chủ đề & Hiển thị',
+        'settings.theme_card_desc': 'Cá nhân hóa giao diện làm việc phù hợp với mắt và thói quen của bạn',
+        'settings.theme_label': 'Chế độ giao diện',
+        'settings.theme_hint': 'Chọn gam màu hiển thị ưa thích cho toàn ứng dụng',
+        'settings.lang_label': 'Ngôn ngữ hiển thị',
+        'settings.lang_hint': 'Ngôn ngữ áp dụng cho toàn bộ nhãn và thông báo',
+        'settings.density_label': 'Mật độ hiển thị danh sách trang',
+        'settings.density_hint': 'Độ thoáng của lưới trang trong giao diện Chỉnh sửa',
+        'settings.interaction_card_title': 'Tương tác & Thông báo',
+        'settings.interaction_card_desc': 'Cấu hình cách hệ thống tương tác và phản hồi',
+        'settings.autocollapse_label': 'Tự động thu gọn thanh bên (Sidebar)',
+        'settings.autocollapse_hint': 'Mở rộng tối đa không gian chỉnh sửa trang PDF',
+        'settings.sound_label': 'Âm thanh thông báo',
+        'settings.sound_hint': 'Phát chuông nhẹ khi hoàn thành ghép hoặc xuất file PDF',
+        'settings.engine_card_title': 'Chất lượng hiển thị & Xuất bản PDF',
+        'settings.engine_card_desc': 'Tùy biến bộ sinh ảnh trang (Preview Engine) và thuật toán nén FPDI',
+        'settings.dpi_label': 'Độ phân giải trang xem trước (Preview DPI)',
+        'settings.dpi_hint': 'DPI càng cao hình ảnh càng rõ nét, DPI thấp xử lý nhanh hơn',
+        'settings.compress_label': 'Thuật toán nén tệp PDF xuất ra',
+        'settings.compress_hint': 'Tối ưu dung lượng tệp khi tải về hoặc chia sẻ email',
+        'settings.orient_label': 'Định hướng trang mặc định',
+        'settings.orient_hint': 'Khổ trang mặc định khi nhập và xuất trang mới',
+        'settings.pagenum_label': 'Tự động nhúng số trang chân trang',
+        'settings.pagenum_hint': 'Đánh số trang dạng \'Trang X / Y\' ở đáy tài liệu khi ghép',
+        'settings.manifest_label': 'Lưu bảng đối chiếu nguồn (Source Manifest)',
+        'settings.manifest_hint': 'Ghi nhận metadata nguồn gốc từng trang phục vụ tra cứu sau này',
+        'settings.sec_card_title': 'Chính sách lưu trữ & Vòng đời dữ liệu',
+        'settings.sec_card_desc': 'Cấu hình cơ chế tự động dọn dẹp và bảo mật theo chuẩn ISO/IEC 27001',
+        'settings.cleanup_label': 'Tự động dọn dẹp tệp xuất trên máy chủ',
+        'settings.cleanup_hint': 'Hệ thống sẽ tự hủy các tệp xuất sau khoảng thời gian chỉ định',
+        'settings.pwd_label': 'Mật khẩu bảo vệ mặc định khi xuất',
+        'settings.pwd_hint': 'Tự động mã hóa AES-128 cho các tệp PDF được xuất (để trống nếu không dùng)',
+        'settings.incognito_label': 'Chế độ riêng tư (Incognito Editor)',
+        'settings.incognito_hint': 'Không lưu bộ nhớ đệm trang PDF trên trình duyệt máy khách',
+        'settings.cache_card_title': 'Dọn dẹp vùng nhớ & Bộ nhớ đệm',
+        'settings.cache_card_desc': 'Giải phóng dung lượng bộ nhớ cục bộ trên trình duyệt',
+        'settings.cache_label': 'Xóa dữ liệu bộ đệm trình duyệt (Client Cache)',
+        'settings.cache_hint': 'Xóa sạch các thumbnail trang nháp đã lưu tạm trong LocalStorage',
+        'settings.btn_cache': 'Dọn dẹp Cache ngay',
+        'settings.profile_card_title': 'Hồ sơ người dùng & Phân quyền',
+        'settings.profile_card_desc': 'Thông tin tài khoản đang đăng nhập trong phiên làm việc',
+        'settings.plan_card_title': 'Gói dịch vụ & Hạn mức tài nguyên',
+        'settings.plan_card_desc': 'Quản lý giới hạn tải lên, dung lượng lưu trữ và quyền ưu tiên xử lý',
+        'settings.footer_note': 'Cài đặt sẽ tự động lưu vào trình duyệt và phiên làm việc của bạn.',
+        'settings.theme_light': '☀️ Giao diện Sáng (Mặc định chuẩn)',
+        'settings.theme_dark': '🌙 Giao diện Tối (Bảo vệ mắt)',
+        'settings.theme_system': '🖥️ Theo cài đặt hệ điều hành',
+        'settings.lang_vi': '🇻🇳 Tiếng Việt (Vietnamese)',
+        'settings.lang_en': '🇬🇧 English (International)',
+        'settings.density_comfortable': 'Tiêu chuẩn (Rộng rãi, dễ kéo thả)',
+        'settings.density_compact': 'Gọn gàng (Hiển thị nhiều trang hơn)',
+        'settings.dpi_72': '72 DPI (Siêu tốc - Tiết kiệm băng thông)',
+        'settings.dpi_150': '150 DPI (Cân bằng chuẩn - Khuyên dùng)',
+        'settings.dpi_300': '300 DPI (Sắc nét cao cấp - Chuẩn in ấn)',
+        'settings.compress_none': 'Không nén (Giữ nguyên chất lượng gốc tuyệt đối)',
+        'settings.compress_balanced': 'Nén thông minh (Tối ưu dung lượng, không vỡ ảnh)',
+        'settings.compress_maximum': 'Nén tối đa (Dung lượng siêu nhẹ cho web/email)',
+        'settings.orient_original': 'Giữ nguyên tỉ lệ gốc của từng trang',
+        'settings.orient_a4_portrait': 'Chuẩn hóa Khổ A4 Đứng (Portrait)',
+        'settings.orient_a4_landscape': 'Chuẩn hóa Khổ A4 Ngang (Landscape)',
+        'settings.cleanup_24h': 'Tự hủy sau 24 giờ (Khuyên dùng bảo mật)',
+        'settings.cleanup_7d': 'Tự hủy sau 7 ngày',
+        'settings.cleanup_30d': 'Tự hủy sau 30 ngày',
+        'settings.cleanup_never': 'Không tự hủy (Chỉ xóa thủ công)',
+        'settings.pwd_placeholder': 'Để trống nếu không khóa tệp...',
+        'profile.name_label': 'Họ và tên:',
+        'profile.email_label': 'Email tài khoản:',
+        'profile.username_label': 'Tên đăng nhập:',
+        'profile.role_label': 'Vai trò:',
+        'profile.storage_limit_label': 'Hạn mức lưu trữ đám mây',
+        'profile.btn_manage_pro': 'Quản lý gói PRO',
+        'profile.btn_upgrade_pro': 'Nâng cấp lên PRO ngay',
+        'profile.btn_logout': 'Đăng xuất tài khoản',
+        'profile.btn_login': 'Đăng nhập tài khoản',
+
+        // Modals: Upload Modal
+        'modal.upload_title': 'Tải lên tệp PDF mới',
+        'modal.upload_drop_title': 'Kéo & Thả tệp PDF vào đây',
+        'modal.upload_drop_sub': 'hoặc bấm vào để chọn tệp từ máy tính',
+        'modal.upload_limit': 'Giới hạn dung lượng tối đa: 25 MB • Chỉ chấp nhận định dạng .pdf',
+        'modal.uploading': 'Đang xử lý tải lên...',
+
+        // Modals: Manifest Modal
+        'modal.manifest_title': 'Bảng đối chiếu trang nguồn (Source Manifest)',
+        'modal.manifest_sub': 'Xác minh từng trang đầu ra lấy từ tệp gốc và trang gốc nào',
+        'modal.manifest_th_output': 'Trang kết quả',
+        'modal.manifest_th_source_doc': 'Tệp nguồn gốc',
+        'modal.manifest_th_source_page': 'Trang gốc',
+        'modal.manifest_th_label': 'Nhãn nhận diện',
+        'modal.manifest_th_rotation': 'Góc xoay',
+
+        // Modals: Auth Modal
+        'modal.auth_title': 'Tài khoản PDF Manager',
+        'modal.auth_sub': 'Đăng nhập hoặc đăng ký tài khoản để quản lý tài liệu cá nhân',
+        'modal.auth_tab_login': 'Đăng nhập',
+        'modal.auth_tab_register': 'Đăng ký mới',
+        'modal.auth_login_user_lbl': 'Tên đăng nhập hoặc Email',
+        'modal.auth_login_user_ph': 'Nhập tên đăng nhập hoặc email...',
+        'modal.auth_login_pwd_lbl': 'Mật khẩu',
+        'modal.auth_login_pwd_ph': 'Nhập mật khẩu của bạn...',
+        'modal.auth_login_btn': 'Đăng nhập',
+        'modal.auth_prompt_no_account': 'Chưa có tài khoản?',
+        'modal.auth_link_register': 'Đăng ký tài khoản mới',
+        'modal.auth_reg_fullname_lbl': 'Họ và tên đầy đủ',
+        'modal.auth_reg_fullname_ph': 'Ví dụ: Nguyễn Văn An...',
+        'modal.auth_reg_user_lbl': 'Tên đăng nhập',
+        'modal.auth_reg_user_ph': 'Nhập tên đăng nhập (vd: nguyenvana)...',
+        'modal.auth_reg_email_lbl': 'Địa chỉ Email',
+        'modal.auth_reg_pwd_lbl': 'Mật khẩu (tối thiểu 6 ký tự)',
+        'modal.auth_reg_pwd_confirm_lbl': 'Xác nhận mật khẩu',
+        'modal.auth_reg_btn': 'Tạo tài khoản và Đăng nhập',
+        'modal.auth_prompt_has_account': 'Đã có tài khoản?',
+        'modal.auth_link_login': 'Đăng nhập ngay',
+
+        // Modals: Plan Modal
+        'modal.plan_title': 'Gói dịch vụ & Quyền lợi',
+        'modal.plan_sub': 'Lựa chọn gói phù hợp với tần suất xử lý tệp PDF của bạn',
+        'modal.plan_free_name': 'Gói Miễn Phí',
+        'modal.plan_free_price': '0đ',
+        'modal.plan_free_unit': '/ trọn đời',
+        'modal.plan_pro_name': 'Gói Chuyên Nghiệp',
+        'modal.plan_pro_price': '99.000đ',
+        'modal.plan_pro_unit': '/ tháng',
+        'modal.plan_current_active': '✓ Đang kích hoạt',
+        'modal.plan_btn_upgrade_pro': 'Nâng cấp PRO ngay',
+        'modal.plan_btn_switch_free': 'Chuyển sang gói FREE',
+
+        // Modals: Account Modal
+        'modal.account_title': 'Thông tin tài khoản',
+        'modal.account_sub': 'Quản lý hồ sơ cá nhân và gói hội viên của bạn',
+        'modal.account_lbl_user': 'Tên đăng nhập:',
+        'modal.account_lbl_plan': 'Gói dịch vụ:',
+        'modal.account_lbl_status': 'Trạng thái:',
+        'modal.account_val_status': 'Hoạt động bình thường',
+        'modal.account_lbl_storage': 'Dung lượng:',
+        'modal.account_btn_upgrade': '⚡ Nâng cấp lên gói PRO',
+        'modal.account_btn_pro_detail': '⭐ Chi tiết gói PRO',
+        'modal.account_btn_logout': 'Đăng xuất',
+
+        // Modals: Page Manager Modal
+        'modal.pm_title': 'Quản lý trang tài liệu',
+        'modal.pm_btn_add': 'Thêm trang',
+        'modal.pm_btn_rot_left': 'Xoay trái',
+        'modal.pm_btn_rot_right': 'Xoay phải',
+        'modal.pm_btn_delete': 'Xóa trang',
+        'modal.pm_btn_duplicate': 'Nhân bản',
+        'modal.pm_btn_import': 'Nhập PDF',
+        'modal.pm_btn_select_all': 'Chọn tất cả',
+        'modal.pm_card_size': 'Cỡ thẻ:',
+        'modal.pm_btn_cancel': 'Hủy bỏ',
+        'modal.pm_btn_save': 'Lưu thay đổi',
+
+        // Modals: Signature Modal
+        'modal.sig_title': 'Tạo và Chèn Chữ ký số',
+        'modal.sig_sub': 'Ký trực tiếp bằng tay, gõ tên hoặc tải ảnh con dấu chữ ký',
+        'modal.sig_tab_draw': 'Vẽ chữ ký',
+        'modal.sig_tab_type': 'Gõ tên',
+        'modal.sig_tab_upload': 'Tải ảnh',
+        'modal.sig_ink': 'Mực ký:',
+        'modal.sig_clear': 'Ký lại',
+        'modal.sig_draw_hint': 'Ký tên của bạn vào đây bằng chuột hoặc cảm ứng',
+        'modal.sig_type_lbl': 'Nhập họ tên của bạn:',
+        'modal.sig_font_style1': 'Phong cách 1 (Viết tay thanh lịch)',
+        'modal.sig_font_style2': 'Phong cách 2 (Nét bút lông ký nhanh)',
+        'modal.sig_font_style3': 'Phong cách 3 (Cổ điển nghiêng)',
+        'modal.sig_upload_prompt': 'Bấm để chọn ảnh chữ ký (PNG, JPG)',
+        'modal.sig_upload_hint': 'Khuyến nghị ảnh nền trong suốt (Transparent PNG)',
+        'modal.sig_btn_apply': 'Chèn chữ ký vào trang',
+
+        // Modals: Stamp Modal
+        'modal.stamp_title': 'Chọn con dấu đóng vào tài liệu',
+        'modal.stamp_sub': 'Dấu tiêu chuẩn phê duyệt, phân loại bảo mật và xác thực công văn',
+        'modal.stamp_approved_desc': 'Đã phê duyệt (Chính thức)',
+        'modal.stamp_draft_desc': 'Bản nháp thử nghiệm',
+        'modal.stamp_secret_desc': 'Bảo mật / Tuyệt mật',
+        'modal.stamp_completed_desc': 'Nghiệm thu hoàn tất',
+        'modal.stamp_certified_desc': 'Chứng thực bản sao',
+        'modal.stamp_void_desc': 'Hủy bỏ / Vô hiệu',
+
+        // Modals: Export Success Modal
+        'modal.exp_title': 'Xuất tệp PDF thành công!',
+        'modal.exp_sub': 'Tài liệu đã được biên tập, nhúng vector chuẩn và sẵn sàng tải về',
+        'modal.exp_lbl_file': 'Tên tệp:',
+        'modal.exp_lbl_pages': 'Tổng số trang:',
+        'modal.exp_lbl_status': 'Trạng thái:',
+        'modal.exp_val_status': 'Đã hoàn tất 100%',
+        'modal.exp_lbl_format': 'Định dạng xuất:',
+        'modal.exp_btn_download': 'Tải xuống tệp PDF hoàn chỉnh',
+        'modal.exp_btn_manifest': 'Xem bảng đối chiếu',
+        'modal.exp_btn_continue': 'Tiếp tục chỉnh sửa',
+
+        // Modals: History Preview Modal
+        'modal.hist_prev_title': 'Chi tiết tệp xuất',
+        'modal.hist_prev_sub': 'Thông số kỹ thuật và cấu trúc tài liệu PDF',
+        'modal.hist_lbl_id': 'Mã định danh:',
+        'modal.hist_lbl_file': 'Tên tệp lưu trữ:',
+        'modal.hist_lbl_pages': 'Tổng số trang:',
+        'modal.hist_lbl_size': 'Kích thước tệp:',
+        'modal.hist_lbl_time': 'Thời gian xuất:',
+        'modal.hist_lbl_std': 'Tiêu chuẩn xuất bản:',
+        'modal.hist_struct_title': 'Cấu trúc trang & Nguồn gốc xuất',
+        'modal.hist_struct_sub': 'Tài liệu này được biên soạn từ các trang nguồn với dữ liệu đối chiếu Source Manifest.',
+        'modal.hist_btn_manifest': 'Xem bảng đối chiếu chi tiết',
+        'modal.hist_btn_close': 'Đóng',
+        'modal.hist_btn_download': 'Tải xuống PDF'
+    },
+    en: {
+        // Brand & Navigation
+        'brand.sub': 'Sort - Merge - Split - Process PDF',
+        'nav.home': 'Home',
+        'nav.documents': 'Documents',
+        'nav.editor': 'PDF Editor',
+        'nav.upgrade': 'Upgrade',
+        'nav.history': 'Export History',
+        'nav.settings': 'Settings',
+        'nav.storage': 'Storage Usage',
+        'nav.upgrade_btn': 'Upgrade',
+        'nav.guest': 'Guest User',
+        'nav.guest_status': 'Not logged in',
+        'nav.guest_login': 'Log In',
+        'nav.guest_register': 'Sign Up',
+        'topbar.search_placeholder': 'Search documents, files...',
+        'topbar.menu_account': 'Account Info',
+        'topbar.menu_upgrade': 'Upgrade Plan',
+        'topbar.menu_settings': 'System Settings',
+        'topbar.menu_history': 'Export History',
+        'topbar.menu_logout': 'Log Out',
+        'topbar.plan_label': 'Plan:',
+        'topbar.plan_pro_unlock': 'Unlock all premium features',
+        'topbar.plan_free_limit': '1GB Storage • Standard Processing',
+        'topbar.plan_btn_pro': 'Plan Details',
+        'topbar.plan_btn_upgrade': 'Upgrade PRO',
+
+        // View Home: Hero Banner
+        'home.hero_title': 'Fast, flexible and easy<br>PDF processing',
+        'home.hero_desc': 'Merge, split, reorder, rotate and edit PDF documents with just a few simple clicks.',
+        'home.badge_secure': 'Secure (Data Protection)',
+        'home.badge_fast': 'Fast (Processed in Seconds)',
+        'home.badge_easy': 'Easy to use (Intuitive UI)',
+
+        // View Home: Quick Actions 2x2
+        'home.qa_editor_title': 'Edit PDF',
+        'home.qa_editor_desc': 'Add text, draw, sign, stamp & notes',
+        'home.qa_pages_title': 'Manage PDF Pages',
+        'home.qa_pages_desc': 'Organize, rotate, duplicate & delete pages',
+        'home.qa_merge_title': 'Merge & Split Documents',
+        'home.qa_merge_desc': 'Combine files or extract page ranges',
+        'home.qa_pro_title': 'Upgrade to PRO',
+        'home.qa_pro_desc': 'Unlimited storage & VIP tools',
+
+        // View Home: Documents Toolbar & Tabs
+        'home.tab_doc_list': 'Document List',
+        'home.tab_processing': 'Processing (2)',
+        'home.btn_upload': 'Upload PDF File',
+
+        // View Home: Document Cards Status
+        'home.status_completed': 'Completed',
+        'home.status_processed': 'Processed',
+        'home.status_error': 'Error',
+        'home.status_processing': 'Processing',
+
+        // View Home: Recent Documents Table
+        'home.recent_title': 'Recent Documents',
+        'home.recent_view_all': 'View all →',
+        'home.th_filename': 'Filename',
+        'home.th_pages': 'Pages',
+        'home.th_size': 'Size',
+        'home.th_created': 'Created Date',
+        'home.th_status': 'Status',
+        'home.th_actions': 'Actions',
+        'home.table_showing': 'Showing 1 - 5 of 6 documents',
+        'home.table_per_page': '10 / page',
+
+        // View Home: Stats & Guide & Promo
+        'home.stats_title': 'Quick Stats',
+        'home.stat_total_docs': 'Total Documents',
+        'home.stat_total_pages': 'Total Pages',
+        'home.stat_processed': 'Processed',
+        'home.stat_errors': 'Errors',
+        'home.guide_title': 'User Guide',
+        'home.guide_step1': 'Upload multiple PDF files',
+        'home.guide_step2': 'Select, organize & rotate pages',
+        'home.guide_step3': 'Preview & review merge plan',
+        'home.guide_step4': 'Merge or split documents',
+        'home.guide_step5': 'Download finished PDF',
+        'home.promo_title': 'Work more effectively<br>with PDF Manager',
+        'home.promo_desc': 'Easily streamline academic papers and graduate portfolios.',
+        'home.promo_btn': 'Learn More',
+
+        // View Editor: Upload State
+        'editor.upload_hero_title': 'Professional Online PDF Editor',
+        'editor.upload_hero_subtitle': 'Add text, freehand drawing, electronic signatures, approval stamps, and full page management',
+        'editor.dropzone_title': 'Drag & Drop your PDF file here',
+        'editor.dropzone_sub': 'or click anywhere to browse from your computer',
+        'editor.btn_upload_hero': 'Choose PDF File to Upload',
+        'editor.dropzone_limits': 'Supports PDF up to 50 MB • 100% secure processing',
+        'editor.sample_divider': 'OR SELECT A SAMPLE DOCUMENT TO EDIT NOW',
+        'editor.sample1_meta': '11 pages • Research Report',
+        'editor.sample2_meta': '6 pages • Course Syllabus',
+        'editor.sample3_meta': '15 pages • Graduation Thesis',
+
+        // View Editor: Ribbon Toolbar
+        'editor.tool_add_text': 'Add Text',
+        'editor.tool_edit_text': 'Edit Text',
+        'editor.tool_sign': 'Signature',
+        'editor.tool_draw': 'Draw',
+        'editor.tool_shapes': 'Line',
+        'editor.shape_line': 'Line',
+        'editor.shape_arrow': 'Arrow',
+        'editor.shape_rect': 'Rectangle',
+        'editor.shape_circle': 'Circle',
+        'editor.shape_polygon': 'Polygon',
+        'editor.tool_highlight': 'Highlight',
+        'editor.tool_image': 'Image',
+        'editor.tool_stamp': 'Stamp',
+        'editor.tool_link': 'Link',
+        'editor.tool_note': 'Note',
+        'editor.btn_switch_file': 'Change File',
+        'editor.btn_page_manager': 'Page Manager',
+        'editor.btn_finish': 'Finish & Save',
+        'editor.colors_label': 'Color:',
+        'editor.stickers_label': 'Icons:',
+        'editor.stroke_label': 'Stroke/Font size:',
+        'editor.font_12': '12 px (Small)',
+        'editor.font_14': '14 px (Standard)',
+        'editor.font_18': '18 px (Medium)',
+        'editor.font_24': '24 px (Large)',
+        'editor.font_32': '32 px (Heading)',
+        'editor.strip_title': 'Document Pages',
+        'editor.btn_add_page': 'Add Page',
+        'editor.opt_blank_page': 'New Blank Page',
+        'editor.opt_import_file': 'Import from file...',
+        'editor.floating_page_label': 'Page:',
+
+        // View Upgrade: Pricing
+        'upgrade.pill_badge': '✨ Upgrade your document experience',
+        'upgrade.hero_title': 'Choose the plan that fits your workflow',
+        'upgrade.hero_subtitle': 'Accelerate document processing for academic papers, graduation projects and research with PDF Manager.',
+        'upgrade.monthly': 'Billed Monthly',
+        'upgrade.yearly': 'Billed Annually',
+        'upgrade.discount': 'Save 20% 🎉',
+        'upgrade.free_name': 'Free Tier (FREE)',
+        'upgrade.free_desc': 'For students and basic document organizing needs.',
+        'upgrade.free_period': '/ forever',
+        'upgrade.free_f1': 'Up to 5 documents / day',
+        'upgrade.free_f2': '1 GB cloud storage',
+        'upgrade.free_f3': 'Basic document editor',
+        'upgrade.free_f4': 'Standard merge & split',
+        'upgrade.free_f5': 'Unlimited page processing',
+        'upgrade.free_f6': 'High-speed processing without watermark',
+        'upgrade.free_f7': 'Digital signatures & secure verification',
+        'upgrade.btn_using': 'Current Plan',
+        'upgrade.btn_switch_free': 'Downgrade to FREE',
+        'upgrade.pro_ribbon': '🔥 MOST POPULAR',
+        'upgrade.pro_name': 'Professional (PRO)',
+        'upgrade.pro_desc': 'For thesis students, researchers, and instructors with heavy workloads.',
+        'upgrade.pro_period': '/ month',
+        'upgrade.pro_f1': 'Unlimited documents',
+        'upgrade.pro_f2': 'Unlimited Cloud SSD storage',
+        'upgrade.pro_f3': '100% full visual editor suite',
+        'upgrade.pro_f4': 'Smart page manager (Drag-drop, rotate)',
+        'upgrade.pro_f5': 'Digital signatures & official stamps',
+        'upgrade.pro_f6': '5x faster processing (Priority queue)',
+        'upgrade.pro_f7': 'Clean exports, no watermarks',
+        'upgrade.pro_f8': '24/7 Priority technical support',
+        'upgrade.btn_pro_current': '⭐ Currently on PRO Plan',
+        'upgrade.btn_pro_cta': 'Upgrade to PRO Now',
+        'upgrade.ent_name': 'Enterprise / Institution',
+        'upgrade.ent_desc': 'For research teams, departments, or entire institutions.',
+        'upgrade.ent_period': '/ month',
+        'upgrade.ent_f1': 'All PRO plan features included',
+        'upgrade.ent_f2': 'Team account management (up to 25 members)',
+        'upgrade.ent_f3': 'Role permissions & shared workspaces',
+        'upgrade.ent_f4': 'Direct REST API integration',
+        'upgrade.ent_f5': 'Comprehensive audit log',
+        'upgrade.ent_f6': 'Dedicated account manager',
+        'upgrade.btn_ent_current': 'Currently on Enterprise',
+        'upgrade.btn_ent_cta': 'Upgrade to Enterprise',
+        'upgrade.cmp_title': 'Detailed Feature Comparison',
+        'upgrade.cmp_th_feature': 'Feature',
+        'upgrade.cmp_th_free': 'Free (FREE)',
+        'upgrade.cmp_th_pro': 'Professional (PRO)',
+        'upgrade.cmp_th_ent': 'Enterprise',
+        'upgrade.cmp_f1': 'Processed documents volume',
+        'upgrade.cmp_f1_free': '5 documents / day',
+        'upgrade.cmp_unlimited': 'Unlimited',
+        'upgrade.cmp_f2': 'Cloud storage capacity',
+        'upgrade.cmp_f2_free': '1 GB',
+        'upgrade.cmp_f3': 'PDFaid Editor (Text, Drawing, Stamps)',
+        'upgrade.cmp_basic': 'Basic',
+        'upgrade.cmp_full': '✓ Full toolset',
+        'upgrade.cmp_f4': 'Page Manager (Rotate, Reorder, Split, Import)',
+        'upgrade.cmp_f4_free': 'Up to 10 pages',
+        'upgrade.cmp_f4_pro': '✓ Unlimited pages',
+        'upgrade.cmp_f5': 'Source Manifest Audit Trail',
+        'upgrade.cmp_f5_pro': '✓ Full page breakdown',
+        'upgrade.cmp_f6': 'Queue processing speed',
+        'upgrade.cmp_standard': 'Standard',
+        'upgrade.cmp_5x': '5x Faster',
+        'upgrade.cmp_highest': 'Highest priority',
+        'upgrade.cmp_f7': 'API & Multi-user Team Admin',
+        'upgrade.cmp_available': '✓ Available',
+        'upgrade.faq_title': 'Frequently Asked Questions',
+        'upgrade.faq_q1': 'Can I cancel or switch plans at any time?',
+        'upgrade.faq_a1': 'Absolutely. You can upgrade, downgrade, or cancel your plan at any time in Account Settings with zero hidden fees.',
+        'upgrade.faq_q2': 'Which payment methods are accepted?',
+        'upgrade.faq_a2': 'We support VietQR bank transfer, MoMo, ZaloPay, and domestic / international credit cards (Visa, MasterCard).',
+        'upgrade.faq_q3': 'Are my PDF documents and data secure?',
+        'upgrade.faq_a3': 'All documents are encrypted via SSL/TLS and safely isolated in your dedicated workspace. Your data is never shared with third parties.',
+
+        // View History
+        'history.badge': 'Export History & Source Manifest',
+        'history.badge_sub': 'Audit Logs & Export Records',
+        'history.title': 'Export History',
+        'history.desc': 'Manage and inspect all exported PDF documents, re-download files, and verify Source Manifest integrity.',
+        'history.btn_refresh': 'Refresh',
+        'history.btn_clear': 'Clear History',
+        'history.stat_total': 'Total Exported',
+        'history.stat_pages': 'Total Pages',
+        'history.stat_size': 'Storage Used',
+        'history.stat_latest': 'Latest Export',
+        'history.search_placeholder': 'Search by filename or ID...',
+        'history.btn_clear_all': 'Clear All History',
+        'history.filter_type_label': 'Operation Type:',
+        'history.filter_sort_label': 'Sort By:',
+        'history.type_all': 'All operation types',
+        'history.type_merge': 'Merge documents',
+        'history.type_split': 'Split documents',
+        'history.type_edit': 'Editor exports',
+        'history.sort_date_desc': 'Newest first',
+        'history.sort_date_asc': 'Oldest first',
+        'history.sort_size_desc': 'Largest size first',
+        'history.sort_pages_desc': 'Most pages first',
+        'history.th_id': 'ID',
+        'history.th_file': 'Exported File & Format',
+        'history.th_action': 'Operation',
+        'history.th_pages': 'Pages',
+        'history.th_size': 'Size',
+        'history.th_created': 'Created At',
+        'history.th_ops': 'Actions',
+
+        // View Settings
+        'settings.badge': 'Configuration & Customization',
+        'settings.title': 'Settings',
+        'settings.desc': 'Customize your workspace, PDF processing quality, security policies, and SaaS account plans.',
+        'settings.btn_reset': 'Reset to Default',
+        'settings.btn_save': 'Save Settings',
+        'settings.btn_save_all': 'Save All Settings',
+        'settings.tab_appearance': 'Appearance & UX',
+        'settings.tab_engine': 'PDF Processing Engine',
+        'settings.tab_security': 'Security & Storage',
+        'settings.tab_account': 'Account & SaaS Plan',
+        'settings.theme_card_title': 'Theme & Display',
+        'settings.theme_card_desc': 'Personalize the interface for your eyes and workflow preferences',
+        'settings.theme_label': 'Theme Mode',
+        'settings.theme_hint': 'Choose your preferred color palette across the application',
+        'settings.lang_label': 'Display Language',
+        'settings.lang_hint': 'Language applied across all labels, menus, and notifications',
+        'settings.density_label': 'Page List Density',
+        'settings.density_hint': 'Spacing of the page grid in the PDF Editor interface',
+        'settings.interaction_card_title': 'Interactions & Notifications',
+        'settings.interaction_card_desc': 'Configure how the system responds and provides feedback',
+        'settings.autocollapse_label': 'Auto-collapse Sidebar',
+        'settings.autocollapse_hint': 'Maximize workspace for editing PDF pages',
+        'settings.sound_label': 'Notification Sound',
+        'settings.sound_hint': 'Play an audio chime upon export or merge completion',
+        'settings.engine_card_title': 'Display Quality & PDF Output',
+        'settings.engine_card_desc': 'Customize preview rendering engine and FPDI compression algorithms',
+        'settings.dpi_label': 'Preview DPI Resolution',
+        'settings.dpi_hint': 'Higher DPI gives clearer thumbnails; lower DPI renders faster',
+        'settings.compress_label': 'Export PDF Compression',
+        'settings.compress_hint': 'Optimize file size for downloads and email sharing',
+        'settings.orient_label': 'Default Page Orientation',
+        'settings.orient_hint': 'Default page aspect ratio when importing and exporting',
+        'settings.pagenum_label': 'Auto Embed Page Numbers',
+        'settings.pagenum_hint': 'Embed \'Page X / Y\' in footer upon document merge',
+        'settings.manifest_label': 'Save Source Manifest',
+        'settings.manifest_hint': 'Retain page source origin metadata for audit trails',
+        'settings.sec_card_title': 'Storage Policies & Data Lifecycle',
+        'settings.sec_card_desc': 'Configure automatic cleanup and ISO/IEC 27001 data protection',
+        'settings.cleanup_label': 'Auto Server File Cleanup',
+        'settings.cleanup_hint': 'Files will automatically expire after the specified duration',
+        'settings.pwd_label': 'Default Export Password',
+        'settings.pwd_hint': 'AES-128 encryption for exported PDF files (leave blank for none)',
+        'settings.incognito_label': 'Incognito Mode',
+        'settings.incognito_hint': 'Do not cache temporary document drafts in the browser',
+        'settings.cache_card_title': 'Memory & Cache Cleanup',
+        'settings.cache_card_desc': 'Free up local browser cache and thumbnail storage',
+        'settings.cache_label': 'Clear Browser Cache (Client Cache)',
+        'settings.cache_hint': 'Wipe temporary drafts and cached thumbnails from LocalStorage',
+        'settings.btn_cache': 'Clear Cache Now',
+        'settings.profile_card_title': 'User Profile & Permissions',
+        'settings.profile_card_desc': 'Account details for the active session',
+        'settings.plan_card_title': 'SaaS Plan & Resource Limits',
+        'settings.plan_card_desc': 'Manage upload size limits, cloud storage, and priority queue',
+        'settings.footer_note': 'Settings are automatically saved to your browser and session.',
+        'settings.theme_light': '☀️ Light Theme (Standard Default)',
+        'settings.theme_dark': '🌙 Dark Theme (Eye Care)',
+        'settings.theme_system': '🖥️ System Preferences',
+        'settings.lang_vi': '🇻🇳 Tiếng Việt (Vietnamese)',
+        'settings.lang_en': '🇬🇧 English (International)',
+        'settings.density_comfortable': 'Comfortable (Spacious, easy drag & drop)',
+        'settings.density_compact': 'Compact (Show more pages)',
+        'settings.dpi_72': '72 DPI (Super Fast - Bandwidth Saving)',
+        'settings.dpi_150': '150 DPI (Balanced - Recommended)',
+        'settings.dpi_300': '300 DPI (Ultra Sharp - Print Quality)',
+        'settings.compress_none': 'No Compression (Preserve original quality)',
+        'settings.compress_balanced': 'Balanced (Smart compression, lossless quality)',
+        'settings.compress_maximum': 'Maximum (Ultra lightweight for web/email)',
+        'settings.orient_original': 'Original Ratio (Keep original proportions)',
+        'settings.orient_a4_portrait': 'Standard A4 Portrait',
+        'settings.orient_a4_landscape': 'Standard A4 Landscape',
+        'settings.cleanup_24h': 'Auto-cleanup after 24 hours (Recommended)',
+        'settings.cleanup_7d': 'Auto-cleanup after 7 days',
+        'settings.cleanup_30d': 'Auto-cleanup after 30 days',
+        'settings.cleanup_never': 'Never auto-cleanup (Manual deletion only)',
+        'settings.pwd_placeholder': 'Leave blank if no password is needed...',
+        'profile.name_label': 'Full Name:',
+        'profile.email_label': 'Account Email:',
+        'profile.username_label': 'Username:',
+        'profile.role_label': 'Role:',
+        'profile.storage_limit_label': 'Cloud Storage Quota',
+        'profile.btn_manage_pro': 'Manage PRO Plan',
+        'profile.btn_upgrade_pro': 'Upgrade to PRO Now',
+        'profile.btn_logout': 'Log Out Account',
+        'profile.btn_login': 'Log In Account',
+
+        // Modals: Upload Modal
+        'modal.upload_title': 'Upload New PDF File',
+        'modal.upload_drop_title': 'Drag & Drop PDF file here',
+        'modal.upload_drop_sub': 'or click to browse file from computer',
+        'modal.upload_limit': 'Maximum file size: 25 MB • Only .pdf files accepted',
+        'modal.uploading': 'Processing upload...',
+
+        // Modals: Manifest Modal
+        'modal.manifest_title': 'Source Manifest & Page Audit Trail',
+        'modal.manifest_sub': 'Verify source document origin and page indices for every exported page',
+        'modal.manifest_th_output': 'Output Page',
+        'modal.manifest_th_source_doc': 'Source Document',
+        'modal.manifest_th_source_page': 'Source Page',
+        'modal.manifest_th_label': 'Page Label',
+        'modal.manifest_th_rotation': 'Rotation',
+
+        // Modals: Auth Modal
+        'modal.auth_title': 'PDF Manager Account',
+        'modal.auth_sub': 'Log in or sign up to manage your personal documents',
+        'modal.auth_tab_login': 'Log In',
+        'modal.auth_tab_register': 'Sign Up',
+        'modal.auth_login_user_lbl': 'Username or Email',
+        'modal.auth_login_user_ph': 'Enter username or email...',
+        'modal.auth_login_pwd_lbl': 'Password',
+        'modal.auth_login_pwd_ph': 'Enter your password...',
+        'modal.auth_login_btn': 'Log In',
+        'modal.auth_prompt_no_account': 'Don\'t have an account?',
+        'modal.auth_link_register': 'Register new account',
+        'modal.auth_reg_fullname_lbl': 'Full Name',
+        'modal.auth_reg_fullname_ph': 'e.g. John Doe...',
+        'modal.auth_reg_user_lbl': 'Username',
+        'modal.auth_reg_user_ph': 'Enter username (e.g. johndoe)...',
+        'modal.auth_reg_email_lbl': 'Email Address',
+        'modal.auth_reg_pwd_lbl': 'Password (min. 6 characters)',
+        'modal.auth_reg_pwd_confirm_lbl': 'Confirm Password',
+        'modal.auth_reg_btn': 'Create Account & Log In',
+        'modal.auth_prompt_has_account': 'Already have an account?',
+        'modal.auth_link_login': 'Log In Now',
+
+        // Modals: Plan Modal
+        'modal.plan_title': 'Plans & Benefits',
+        'modal.plan_sub': 'Choose the plan suited to your PDF processing needs',
+        'modal.plan_free_name': 'Free Plan',
+        'modal.plan_free_price': '0 VND',
+        'modal.plan_free_unit': '/ forever',
+        'modal.plan_pro_name': 'Professional Plan',
+        'modal.plan_pro_price': '99,000 VND',
+        'modal.plan_pro_unit': '/ month',
+        'modal.plan_current_active': '✓ Active',
+        'modal.plan_btn_upgrade_pro': 'Upgrade to PRO Now',
+        'modal.plan_btn_switch_free': 'Switch to FREE',
+
+        // Modals: Account Modal
+        'modal.account_title': 'Account Information',
+        'modal.account_sub': 'Manage your profile and membership status',
+        'modal.account_lbl_user': 'Username:',
+        'modal.account_lbl_plan': 'Service Plan:',
+        'modal.account_lbl_status': 'Status:',
+        'modal.account_val_status': 'Active',
+        'modal.account_lbl_storage': 'Storage:',
+        'modal.account_btn_upgrade': '⚡ Upgrade to PRO',
+        'modal.account_btn_pro_detail': '⭐ PRO Plan Details',
+        'modal.account_btn_logout': 'Log Out',
+
+        // Modals: Page Manager Modal
+        'modal.pm_title': 'Page Manager',
+        'modal.pm_btn_add': 'Add Page',
+        'modal.pm_btn_rot_left': 'Rotate Left',
+        'modal.pm_btn_rot_right': 'Rotate Right',
+        'modal.pm_btn_delete': 'Delete Pages',
+        'modal.pm_btn_duplicate': 'Duplicate',
+        'modal.pm_btn_import': 'Import PDF',
+        'modal.pm_btn_select_all': 'Select All',
+        'modal.pm_card_size': 'Card Size:',
+        'modal.pm_btn_cancel': 'Cancel',
+        'modal.pm_btn_save': 'Save Changes',
+
+        // Modals: Signature Modal
+        'modal.sig_title': 'Create & Insert Signature',
+        'modal.sig_sub': 'Draw by hand, type your name or upload signature image',
+        'modal.sig_tab_draw': 'Draw Signature',
+        'modal.sig_tab_type': 'Type Name',
+        'modal.sig_tab_upload': 'Upload Image',
+        'modal.sig_ink': 'Ink Color:',
+        'modal.sig_clear': 'Clear',
+        'modal.sig_draw_hint': 'Sign your name here with mouse or touch',
+        'modal.sig_type_lbl': 'Enter your full name:',
+        'modal.sig_font_style1': 'Style 1 (Elegant Handwriting)',
+        'modal.sig_font_style2': 'Style 2 (Brush Pen Quick)',
+        'modal.sig_font_style3': 'Style 3 (Classic Cursive)',
+        'modal.sig_upload_prompt': 'Click to select signature image (PNG, JPG)',
+        'modal.sig_upload_hint': 'Transparent PNG recommended',
+        'modal.sig_btn_apply': 'Insert Signature to Page',
+
+        // Modals: Stamp Modal
+        'modal.stamp_title': 'Select Document Stamp',
+        'modal.stamp_sub': 'Standard stamps for approval, security classification and official validation',
+        'modal.stamp_approved_desc': 'Approved (Official)',
+        'modal.stamp_draft_desc': 'Draft (Internal Review)',
+        'modal.stamp_secret_desc': 'Confidential / Top Secret',
+        'modal.stamp_completed_desc': 'Completed / Verified',
+        'modal.stamp_certified_desc': 'Certified Copy',
+        'modal.stamp_void_desc': 'Void / Revoked',
+
+        // Modals: Export Success Modal
+        'modal.exp_title': 'PDF Export Successful!',
+        'modal.exp_sub': 'Document has been generated with vector precision and is ready for download',
+        'modal.exp_lbl_file': 'File Name:',
+        'modal.exp_lbl_pages': 'Total Pages:',
+        'modal.exp_lbl_status': 'Status:',
+        'modal.exp_val_status': '100% Completed',
+        'modal.exp_lbl_format': 'Export Format:',
+        'modal.exp_btn_download': 'Download Complete PDF File',
+        'modal.exp_btn_manifest': 'View Manifest',
+        'modal.exp_btn_continue': 'Continue Editing',
+
+        // Modals: History Preview Modal
+        'modal.hist_prev_title': 'Export File Details',
+        'modal.hist_prev_sub': 'Technical metadata and PDF document structure',
+        'modal.hist_lbl_id': 'Identifier ID:',
+        'modal.hist_lbl_file': 'Stored File Name:',
+        'modal.hist_lbl_pages': 'Total Pages:',
+        'modal.hist_lbl_size': 'File Size:',
+        'modal.hist_lbl_time': 'Export Time:',
+        'modal.hist_lbl_std': 'Publishing Standard:',
+        'modal.hist_struct_title': 'Page Structure & Source Origin',
+        'modal.hist_struct_sub': 'This document was compiled from source pages audited via Source Manifest.',
+        'modal.hist_btn_manifest': 'View Full Manifest',
+        'modal.hist_btn_close': 'Close',
+        'modal.hist_btn_download': 'Download PDF'
+    }
+};
+
+function applyLanguage(lang) {
+    if (!lang || !APP_I18N[lang]) lang = 'vi';
+    const dict = APP_I18N[lang];
+    document.documentElement.setAttribute('lang', lang);
+
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (dict[key] !== undefined) {
+            el.textContent = dict[key];
+        }
+    });
+
+    document.querySelectorAll('[data-i18n-html]').forEach(el => {
+        const key = el.getAttribute('data-i18n-html');
+        if (dict[key] !== undefined) {
+            el.innerHTML = dict[key];
+        }
+    });
+
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+        const key = el.getAttribute('data-i18n-placeholder');
+        if (dict[key] !== undefined) {
+            el.placeholder = dict[key];
+        }
+    });
+
+    document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        const key = el.getAttribute('data-i18n-title');
+        if (dict[key] !== undefined) {
+            el.title = dict[key];
+        }
+    });
+
+    // Cập nhật lại các bảng dữ liệu nếu đang hiển thị (ví dụ lịch sử xuất)
+    if (typeof filterExportHistory === 'function' && document.getElementById('historyTableBody')) {
+        filterExportHistory();
+    }
+
+    // Cập nhật chu kỳ thanh toán nâng cấp nếu có toggle
+    const cycleToggle = document.getElementById('billingCycleToggle');
+    if (cycleToggle && typeof toggleBillingCycle === 'function') {
+        toggleBillingCycle(cycleToggle.checked);
+    }
+}
+
+function switchSettingsTab(tabName) {
+    document.querySelectorAll('.settings-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
+    });
+
+    document.querySelectorAll('.settings-tab-pane').forEach(pane => {
+        pane.classList.toggle('active', pane.id === `tab-pane-${tabName}`);
+    });
+}
+
+// Âm thanh thông báo khi thao tác thành công (Web Audio API tổng hợp)
+function playSettingsChime() {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // Note D5
+        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // Note A5
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+    } catch (e) {}
+}
+
+async function loadUserSettings() {
+    let settings = null;
+    let localSettings = {};
+
+    // 1. Đọc từ bộ nhớ trình duyệt LocalStorage trước
+    try {
+        const local = localStorage.getItem('pdf_manager_user_settings');
+        if (local) localSettings = JSON.parse(local);
+    } catch (e) {}
+
+    // 2. Nạp từ window.INITIAL_SETTINGS nếu server đã nạp sẵn
+    if (window.INITIAL_SETTINGS && typeof window.INITIAL_SETTINGS === 'object') {
+        settings = Object.assign({}, localSettings, window.INITIAL_SETTINGS);
+    }
+
+    // 3. Tải cấu hình từ Server qua SettingController
+    try {
+        const res = await fetch(apiUrl('/api/settings/get'));
+        const data = await res.json();
+        if (data.status === 'success' && data.settings) {
+            settings = Object.assign({}, localSettings, data.settings);
+        }
+    } catch (e) {
+        if (!settings) settings = localSettings;
+    }
+
+    if (!settings || Object.keys(settings).length === 0) {
+        settings = localSettings;
+    }
+
+    const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el && val !== undefined && val !== null) el.value = val;
+    };
+    const setChecked = (id, bool) => {
+        const el = document.getElementById(id);
+        if (el && bool !== undefined && bool !== null) el.checked = Boolean(bool);
+    };
+
+    if (settings.theme) setVal('settingTheme', settings.theme);
+    if (settings.language) setVal('settingLanguage', settings.language);
+    if (settings.density) setVal('settingDensity', settings.density);
+    setChecked('settingAutoCollapse', settings.auto_collapse_sidebar);
+    setChecked('settingNotificationSound', settings.notification_sound !== false);
+
+    if (settings.preview_dpi) setVal('settingPreviewDpi', settings.preview_dpi);
+    if (settings.compression_level) setVal('settingCompression', settings.compression_level);
+    if (settings.default_orientation) setVal('settingOrientation', settings.default_orientation);
+    setChecked('settingAutoPageNumbers', settings.auto_page_numbers);
+    setChecked('settingKeepManifest', settings.keep_manifest !== false);
+
+    if (settings.auto_cleanup) setVal('settingAutoCleanup', settings.auto_cleanup);
+    if (settings.default_password) setVal('settingDefaultPassword', settings.default_password);
+    setChecked('settingIncognito', settings.incognito_mode);
+
+    // CHỈ áp dụng các thiết lập ĐÃ LƯU này lên giao diện (không tự động đổi khi đang chọn dropdown)
+    applyActiveSettings(settings);
+}
+
+// Áp dụng cấu hình giao diện ĐÃ ĐƯỢC XÁC NHẬN LƯU (hoặc cấu hình gốc đã nạp)
+function applyActiveSettings(overrideSettings = null) {
+    const s = overrideSettings || {};
+    // Chỉ lấy từ đối tượng cấu hình được chỉ định hoặc localStorage, KHÔNG lấy giá trị chưa lưu từ form
+    const theme = s.theme || localStorage.getItem('pdf_pref_theme') || 'light';
+    const lang = s.language || localStorage.getItem('pdf_pref_lang') || 'vi';
+    const density = s.density || localStorage.getItem('pdf_pref_density') || 'comfortable';
+    const autoCollapse = s.auto_collapse_sidebar !== undefined 
+        ? Boolean(s.auto_collapse_sidebar) 
+        : (localStorage.getItem('sidebar_compact') === 'true');
+
+    // 1. Áp dụng Chủ đề Theme
+    if (theme === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        document.body.setAttribute('data-theme', 'dark');
+    } else if (theme === 'system') {
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (prefersDark) {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            document.body.setAttribute('data-theme', 'dark');
+        } else {
+            document.documentElement.removeAttribute('data-theme');
+            document.body.removeAttribute('data-theme');
+        }
+    } else {
+        document.documentElement.removeAttribute('data-theme');
+        document.body.removeAttribute('data-theme');
+    }
+
+    // 2. Áp dụng Mật độ hiển thị Density
+    if (density === 'compact') {
+        document.body.classList.add('density-compact');
+        document.documentElement.classList.add('density-compact');
+    } else {
+        document.body.classList.remove('density-compact');
+        document.documentElement.classList.remove('density-compact');
+    }
+
+    // 3. Tự động thu gọn thanh bên Sidebar
+    if (autoCollapse) {
+        setSidebarCompact(true);
+    } else if (typeof getPathView === 'function' && getPathView() !== 'editor') {
+        setSidebarCompact(false);
+    }
+
+    // 4. Áp dụng Ngôn ngữ hiển thị
+    if (typeof applyLanguage === 'function') {
+        applyLanguage(lang);
+    }
+}
+
+// Hàm tương thích ngược nếu có module khác gọi
+function applyImmediateSettings(overrideSettings = null) {
+    applyActiveSettings(overrideSettings);
+}
+
+async function saveAllSettings() {
+    const getVal = (id, def = '') => {
+        const el = document.getElementById(id);
+        return el ? el.value : def;
+    };
+    const getChecked = (id, def = false) => {
+        const el = document.getElementById(id);
+        return el ? el.checked : def;
+    };
+
+    const payload = {
+        theme: getVal('settingTheme', 'light'),
+        language: getVal('settingLanguage', 'vi'),
+        density: getVal('settingDensity', 'comfortable'),
+        auto_collapse_sidebar: getChecked('settingAutoCollapse', false),
+        notification_sound: getChecked('settingNotificationSound', true),
+        preview_dpi: parseInt(getVal('settingPreviewDpi', '150'), 10),
+        compression_level: getVal('settingCompression', 'balanced'),
+        default_orientation: getVal('settingOrientation', 'original'),
+        auto_page_numbers: getChecked('settingAutoPageNumbers', false),
+        keep_manifest: getChecked('settingKeepManifest', true),
+        auto_cleanup: getVal('settingAutoCleanup', '24h'),
+        default_password: getVal('settingDefaultPassword', ''),
+        incognito_mode: getChecked('settingIncognito', false)
+    };
+
+    // Hiệu ứng trạng thái nút đang lưu
+    const saveBtns = document.querySelectorAll('.btn-save-hero, .settings-save-footer .btn-primary');
+    saveBtns.forEach(btn => {
+        btn.classList.add('saving');
+        btn.dataset.originalHtml = btn.innerHTML;
+        btn.innerHTML = `
+            <svg class="svg-icon svg-icon-sm spin" viewBox="0 0 24 24">
+                <line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/>
+                <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+                <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
+                <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+            </svg>
+            <span>${payload.language === 'en' ? 'Saving...' : 'Đang lưu...'}</span>
+        `;
+    });
+
+    try {
+        // 1. Lưu ngay vào bộ nhớ trình duyệt để không bao giờ bị mất
+        localStorage.setItem('pdf_manager_user_settings', JSON.stringify(payload));
+        localStorage.setItem('pdf_pref_theme', payload.theme);
+        localStorage.setItem('pdf_pref_lang', payload.language);
+        localStorage.setItem('pdf_pref_density', payload.density);
+        localStorage.setItem('sidebar_compact', payload.auto_collapse_sidebar ? 'true' : 'false');
+
+        // 2. Gửi lưu lên máy chủ qua SettingController
+        const res = await fetch(apiUrl('/api/settings/save'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        // 3. ÁP DỤNG CÁC THAY ĐỔI LÊN GIAO DIỆN CHỈ KHI BẤM LƯU
+        applyActiveSettings(payload);
+
+        // 4. Phát âm thanh xác nhận nếu bật
+        if (payload.notification_sound) {
+            playSettingsChime();
+        }
+
+        // 5. Hiển thị thông báo thành công trực quan ngay trên trang Cài đặt
+        renderSettingsSuccessBanner(payload.language);
+        showToast(payload.language === 'en' ? '✓ Settings have been saved and applied!' : '✓ Cài đặt hệ thống đã được lưu và áp dụng thành công!', 'success');
+
+        // 6. Hiệu ứng nút hoàn tất
+        saveBtns.forEach(btn => {
+            btn.classList.remove('saving');
+            btn.classList.add('saved');
+            btn.innerHTML = `
+                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+                <span>${payload.language === 'en' ? '✓ Saved!' : '✓ Đã lưu thiết lập!'}</span>
+            `;
+            setTimeout(() => {
+                btn.classList.remove('saved');
+                btn.innerHTML = btn.dataset.originalHtml || (payload.language === 'en' ? 'Save Settings' : 'Lưu thiết lập');
+            }, 2500);
+        });
+    } catch (e) {
+        applyActiveSettings(payload);
+        showToast(payload.language === 'en' ? '✓ Settings saved locally!' : '✓ Đã lưu cài đặt vào bộ nhớ trình duyệt!', 'info');
+        saveBtns.forEach(btn => {
+            btn.classList.remove('saving');
+            btn.innerHTML = btn.dataset.originalHtml || (payload.language === 'en' ? 'Save Settings' : 'Lưu thiết lập');
+        });
+    }
+}
+
+// Hiển thị Banner thông báo Lưu thành công nổi bật ngay trên đầu trang Cài đặt
+function renderSettingsSuccessBanner(lang = 'vi') {
+    const existing = document.getElementById('settingsSaveSuccessAlert');
+    if (existing) existing.remove();
+
+    const heroCard = document.querySelector('#view-settings .view-hero-card');
+    if (!heroCard) return;
+
+    const isEn = lang === 'en';
+    const banner = document.createElement('div');
+    banner.id = 'settingsSaveSuccessAlert';
+    banner.className = 'settings-alert-success';
+    banner.innerHTML = `
+        <svg class="svg-icon" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <div>
+            <strong>${isEn ? 'Settings saved and applied successfully!' : 'Cài đặt hệ thống đã được lưu và áp dụng thành công!'}</strong>
+            <span>${isEn ? 'All settings (Theme, Language, DPI, Compression, Passwords & Security Policies) are now active.' : 'Tất cả thông số (Chủ đề giao diện, Ngôn ngữ, DPI, Thuật toán nén, Mật khẩu & Chính sách bảo mật) đã có hiệu lực ngay lập tức.'}</span>
+        </div>
+    `;
+
+    heroCard.parentNode.insertBefore(banner, heroCard.nextSibling);
+
+    // Tự động mờ dần và gỡ sau 5 giây
+    setTimeout(() => {
+        banner.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+        banner.style.opacity = '0';
+        banner.style.transform = 'translateY(-10px)';
+        setTimeout(() => banner.remove(), 500);
+    }, 5000);
+}
+
+async function resetSettingsToDefault() {
+    if (!confirm('Bạn có chắc chắn muốn khôi phục tất cả cài đặt về giá trị mặc định chuẩn?')) {
+        return;
+    }
+
+    try {
+        const res = await fetch(apiUrl('/api/settings/reset'), { method: 'POST' });
+        const data = await res.json();
+    } catch (e) {}
+
+    const defaultSettings = {
+        theme: 'light',
+        language: 'vi',
+        density: 'comfortable',
+        auto_collapse_sidebar: false,
+        notification_sound: true,
+        preview_dpi: 150,
+        compression_level: 'balanced',
+        default_orientation: 'original',
+        auto_page_numbers: false,
+        keep_manifest: true,
+        auto_cleanup: '24h',
+        default_password: '',
+        incognito_mode: false
+    };
+
+    localStorage.setItem('pdf_manager_user_settings', JSON.stringify(defaultSettings));
+    localStorage.setItem('pdf_pref_theme', 'light');
+    localStorage.setItem('pdf_pref_lang', 'vi');
+    localStorage.setItem('pdf_pref_density', 'comfortable');
+    localStorage.setItem('sidebar_compact', 'false');
+
+    const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.value = val;
+    };
+    const setChecked = (id, bool) => {
+        const el = document.getElementById(id);
+        if (el) el.checked = Boolean(bool);
+    };
+
+    setVal('settingTheme', 'light');
+    setVal('settingLanguage', 'vi');
+    setVal('settingDensity', 'comfortable');
+    setChecked('settingAutoCollapse', false);
+    setChecked('settingNotificationSound', true);
+
+    setVal('settingPreviewDpi', '150');
+    setVal('settingCompression', 'balanced');
+    setVal('settingOrientation', 'original');
+    setChecked('settingAutoPageNumbers', false);
+    setChecked('settingKeepManifest', true);
+
+    setVal('settingAutoCleanup', '24h');
+    setVal('settingDefaultPassword', '');
+    setChecked('settingIncognito', false);
+
+    applyActiveSettings(defaultSettings);
+    showToast('✓ Đã khôi phục cài đặt gốc mặc định!', 'info');
+}
+
+function clearClientCache() {
+    if (!confirm('Bạn có chắc chắn muốn xóa toàn bộ bộ đệm (LocalStorage Cache) của trình duyệt?')) {
+        return;
+    }
+
+    try {
+        localStorage.removeItem('pdf_editor_recent_docs');
+        localStorage.removeItem('pdf_editor_draft_pages');
+        showToast('✓ Đã dọn dẹp bộ nhớ đệm trình duyệt thành công!', 'success');
+    } catch (e) {
+        showToast('Lỗi khi dọn dẹp bộ nhớ đệm.', 'error');
     }
 }
 
@@ -676,6 +2271,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Clean Routing init on load and hash change
     window.addEventListener('hashchange', initCleanRouting);
     initCleanRouting();
+    loadUserSettings();
+    if (getPathView() === 'history') {
+        loadExportHistory();
+    }
 
     // Click outside to close user dropdown
     document.addEventListener('click', (e) => {
@@ -2264,6 +3863,7 @@ function pmSaveAndApply() {
 // SAAS PRICING & UPGRADE PAGE LOGIC
 // =========================================================
 function toggleBillingCycle(isYearly) {
+    const isEn = document.documentElement.getAttribute('lang') === 'en';
     const proPrice = document.getElementById('proPriceValue');
     const proPeriod = document.getElementById('proPricePeriod');
     const proHint = document.getElementById('proYearlyHint');
@@ -2273,20 +3873,26 @@ function toggleBillingCycle(isYearly) {
     const entHint = document.getElementById('entYearlyHint');
 
     if (isYearly) {
-        if (proPrice) proPrice.innerText = '79.000 đ';
-        if (proPeriod) proPeriod.innerText = '/ tháng (Trả cả năm)';
-        if (proHint) proHint.style.display = 'block';
+        if (proPrice) proPrice.innerText = isEn ? '79,000 VND' : '79.000 đ';
+        if (proPeriod) proPeriod.innerText = isEn ? '/ month (Billed annually)' : '/ tháng (Trả cả năm)';
+        if (proHint) {
+            proHint.innerText = isEn ? 'Billed 950,000 VND/yr (Save 238,000 VND)' : 'Thanh toán 950.000 đ/năm (Tiết kiệm 238.000 đ)';
+            proHint.style.display = 'block';
+        }
 
-        if (entPrice) entPrice.innerText = '239.000 đ';
-        if (entPeriod) entPeriod.innerText = '/ tháng (Trả cả năm)';
-        if (entHint) entHint.style.display = 'block';
+        if (entPrice) entPrice.innerText = isEn ? '239,000 VND' : '239.000 đ';
+        if (entPeriod) entPeriod.innerText = isEn ? '/ month (Billed annually)' : '/ tháng (Trả cả năm)';
+        if (entHint) {
+            entHint.innerText = isEn ? 'Billed 2,870,000 VND/yr (Save 718,000 VND)' : 'Thanh toán 2.870.000 đ/năm (Tiết kiệm 718.000 đ)';
+            entHint.style.display = 'block';
+        }
     } else {
-        if (proPrice) proPrice.innerText = '99.000 đ';
-        if (proPeriod) proPeriod.innerText = '/ tháng';
+        if (proPrice) proPrice.innerText = isEn ? '99,000 VND' : '99.000 đ';
+        if (proPeriod) proPeriod.innerText = isEn ? '/ month' : '/ tháng';
         if (proHint) proHint.style.display = 'none';
 
-        if (entPrice) entPrice.innerText = '299.000 đ';
-        if (entPeriod) entPeriod.innerText = '/ tháng';
+        if (entPrice) entPrice.innerText = isEn ? '299,000 VND' : '299.000 đ';
+        if (entPeriod) entPeriod.innerText = isEn ? '/ month' : '/ tháng';
         if (entHint) entHint.style.display = 'none';
     }
 }
