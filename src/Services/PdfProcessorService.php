@@ -192,12 +192,24 @@ class PdfProcessorService
             // Ghi nhận vào cơ sở dữ liệu nếu có PDO
             $outputId = time();
             if ($this->pdo) {
+                $targetPlanId = $planId > 0 ? $planId : 1;
+                try {
+                    $chkPlan = $this->pdo->prepare("SELECT id FROM edit_plans WHERE id = ?");
+                    $chkPlan->execute([$targetPlanId]);
+                    if (!$chkPlan->fetchColumn()) {
+                        $insPlan = $this->pdo->prepare("INSERT INTO edit_plans (id, user_id, title, plan_data) VALUES (?, ?, ?, ?)");
+                        $insPlan->execute([$targetPlanId, $userId, 'Kế hoạch biên tập #' . $targetPlanId, json_encode($planItems, JSON_UNESCAPED_UNICODE)]);
+                    }
+                } catch (Exception $pe) {
+                    // Tiếp tục nếu bảng không có ràng buộc
+                }
+
                 // Tạo export_job
                 $stmtJob = $this->pdo->prepare("
                     INSERT INTO export_jobs (user_id, edit_plan_id, job_type, status, progress_percent, started_at, completed_at)
                     VALUES (?, ?, 'merge', 'completed', 100, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ");
-                $stmtJob->execute([$userId, $planId > 0 ? $planId : 1]);
+                $stmtJob->execute([$userId, $targetPlanId]);
                 $jobId = (int)$this->pdo->lastInsertId();
 
                 // Tạo output

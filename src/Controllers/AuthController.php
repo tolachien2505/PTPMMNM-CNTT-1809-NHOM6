@@ -39,7 +39,7 @@ class AuthController
 
         try {
             $stmt = $this->pdo->prepare("
-                SELECT id, username, email, full_name, role, password_hash 
+                SELECT id, username, email, full_name, role, plan, password_hash 
                 FROM users 
                 WHERE username = ? OR email = ?
                 LIMIT 1
@@ -62,22 +62,24 @@ class AuthController
             }
 
             if (!$isValidPassword) {
-                ResponseHelper::error('Mật khẩu không chính xác. Mật khẩu mẫu: 123456', 401);
+                ResponseHelper::error('Mật khẩu không chính xác. Vui lòng kiểm tra lại.', 401);
                 return;
             }
 
             // Thiết lập Session
-            $roleLabel = match ($user['role']) {
+            $roleLabel = match ($user['role'] ?? '') {
                 'admin' => 'Quản trị viên',
                 'lecturer' => 'Giảng viên',
-                default => 'Sinh viên',
+                default => 'Thành viên',
             };
+            $plan = !empty($user['plan']) ? strtoupper($user['plan']) : 'FREE';
 
             $_SESSION['user_id'] = (int)$user['id'];
             $_SESSION['user_name'] = $user['full_name'];
             $_SESSION['user_role'] = $roleLabel;
             $_SESSION['user_email'] = $user['email'];
             $_SESSION['username'] = $user['username'];
+            $_SESSION['user_plan'] = $plan;
 
             ResponseHelper::json([
                 'status' => 'success',
@@ -87,6 +89,7 @@ class AuthController
                     'username' => $user['username'],
                     'name' => $user['full_name'],
                     'role' => $roleLabel,
+                    'plan' => $plan,
                     'email' => $user['email']
                 ]
             ]);
@@ -96,7 +99,7 @@ class AuthController
     }
 
     /**
-     * Đăng ký tài khoản mới
+     * Đăng ký tài khoản mới (không cần chọn vai trò, mặc định gói FREE)
      */
     public function register(array $data): void
     {
@@ -104,7 +107,6 @@ class AuthController
         $username = strtolower(trim($data['username'] ?? ''));
         $email = strtolower(trim($data['email'] ?? ''));
         $password = trim($data['password'] ?? '');
-        $role = trim($data['role'] ?? 'student');
 
         if (empty($fullName) || empty($username) || empty($email) || empty($password)) {
             ResponseHelper::error('Vui lòng điền đầy đủ tất cả các trường thông tin.', 400);
@@ -126,9 +128,8 @@ class AuthController
             return;
         }
 
-        if (!in_array($role, ['student', 'lecturer', 'admin'])) {
-            $role = 'student';
-        }
+        $role = 'user';
+        $plan = 'FREE';
 
         if (!$this->pdo) {
             ResponseHelper::error('Không thể kết nối cơ sở dữ liệu.', 500);
@@ -153,41 +154,72 @@ class AuthController
             // Mã hóa mật khẩu
             $passwordHash = password_hash($password, PASSWORD_BCRYPT);
 
-            // Thêm người dùng mới
+            // Thêm người dùng mới với gói FREE
             $stmt = $this->pdo->prepare("
-                INSERT INTO users (username, email, password_hash, full_name, role)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users (username, email, password_hash, full_name, role, plan)
+                VALUES (?, ?, ?, ?, ?, ?)
             ");
-            $stmt->execute([$username, $email, $passwordHash, $fullName, $role]);
+            $stmt->execute([$username, $email, $passwordHash, $fullName, $role, $plan]);
             $newId = (int)$this->pdo->lastInsertId();
-
-            $roleLabel = match ($role) {
-                'admin' => 'Quản trị viên',
-                'lecturer' => 'Giảng viên',
-                default => 'Sinh viên',
-            };
 
             // Tự động đăng nhập
             $_SESSION['user_id'] = $newId;
             $_SESSION['user_name'] = $fullName;
-            $_SESSION['user_role'] = $roleLabel;
+            $_SESSION['user_role'] = 'Thành viên';
             $_SESSION['user_email'] = $email;
             $_SESSION['username'] = $username;
+            $_SESSION['user_plan'] = 'FREE';
 
             ResponseHelper::json([
                 'status' => 'success',
-                'message' => 'Đăng ký tài khoản thành công! Bạn đã được tự động đăng nhập.',
+                'message' => 'Đăng ký tài khoản thành công! Chào mừng ' . $fullName,
                 'user' => [
                     'id' => $newId,
                     'username' => $username,
                     'name' => $fullName,
-                    'role' => $roleLabel,
+                    'role' => 'Thành viên',
+                    'plan' => 'FREE',
                     'email' => $email
                 ]
             ], 201);
         } catch (Exception $e) {
             ResponseHelper::error('Lỗi đăng ký tài khoản: ' . $e->getMessage(), 500);
         }
+    }
+
+    /**
+     * Nâng cấp hoặc chuyển đổi gói (FREE / PRO)
+     */
+    public function upgradePlan(array $data): void
+    {
+        if (!isset($_SESSION['user_id'])) {
+            ResponseHelper::error('Vui lòng đăng nhập để nâng cấp gói dịch vụ.', 401);
+            return;
+        }
+
+        $newPlan = strtoupper(trim($data['plan'] ?? 'PRO'));
+        if (!in_array($newPlan, ['FREE', 'PRO'])) {
+            $newPlan = 'PRO';
+        }
+
+        if ($this->pdo) {
+            $stmt = $this->pdo->prepare("UPDATE users SET plan = ? WHERE id = ?");
+            $stmt->execute([$newPlan, $_SESSION['user_id']]);
+        }
+
+        $_SESSION['user_plan'] = $newPlan;
+
+        ResponseHelper::json([
+            'status' => 'success',
+            'message' => 'Chúc mừng! Tài khoản đã chuyển sang gói ' . $newPlan . ' thành công.',
+            'plan' => $newPlan,
+            'user' => [
+                'id' => $_SESSION['user_id'],
+                'name' => $_SESSION['user_name'] ?? 'Người dùng',
+                'plan' => $newPlan,
+                'email' => $_SESSION['user_email'] ?? ''
+            ]
+        ]);
     }
 
     /**
@@ -208,7 +240,8 @@ class AuthController
             'user' => [
                 'id' => $_SESSION['user_id'],
                 'name' => $_SESSION['user_name'] ?? 'Người dùng',
-                'role' => $_SESSION['user_role'] ?? 'Sinh viên',
+                'role' => $_SESSION['user_role'] ?? 'Thành viên',
+                'plan' => $_SESSION['user_plan'] ?? 'FREE',
                 'email' => $_SESSION['user_email'] ?? '',
                 'username' => $_SESSION['username'] ?? ''
             ]
@@ -221,8 +254,15 @@ class AuthController
     public function logout(): void
     {
         $_SESSION = [];
-        if (session_id() !== '' || headers_sent() === false) {
-            session_destroy();
+        if (ini_get("session.use_cookies")) {
+            $params = session_get_cookie_params();
+            setcookie(session_name(), '', time() - 42000,
+                $params["path"], $params["domain"],
+                $params["secure"], $params["httponly"]
+            );
+        }
+        if (session_id() !== '' || !headers_sent()) {
+            @session_destroy();
         }
 
         ResponseHelper::json([
@@ -232,7 +272,7 @@ class AuthController
     }
 
     /**
-     * Chuyển đổi nhanh giữa các tài khoản mẫu (phục vụ kiểm thử phân quyền đề tài)
+     * Chuyển đổi nhanh tài khoản
      */
     public function switchUser(int $targetId): void
     {
@@ -242,34 +282,37 @@ class AuthController
         }
 
         try {
-            $stmt = $this->pdo->prepare("SELECT id, username, email, full_name, role FROM users WHERE id = ?");
+            $stmt = $this->pdo->prepare("SELECT id, username, email, full_name, role, plan FROM users WHERE id = ?");
             $stmt->execute([$targetId]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$user) {
-                ResponseHelper::error('Không tìm thấy tài khoản mẫu.', 404);
+                ResponseHelper::error('Không tìm thấy tài khoản.', 404);
                 return;
             }
 
-            $roleLabel = match ($user['role']) {
+            $roleLabel = match ($user['role'] ?? '') {
                 'admin' => 'Quản trị viên',
                 'lecturer' => 'Giảng viên',
-                default => 'Sinh viên',
+                default => 'Thành viên',
             };
+            $plan = !empty($user['plan']) ? strtoupper($user['plan']) : 'FREE';
 
             $_SESSION['user_id'] = (int)$user['id'];
             $_SESSION['user_name'] = $user['full_name'];
             $_SESSION['user_role'] = $roleLabel;
             $_SESSION['user_email'] = $user['email'];
             $_SESSION['username'] = $user['username'];
+            $_SESSION['user_plan'] = $plan;
 
             ResponseHelper::json([
                 'status' => 'success',
-                'message' => 'Đã chuyển sang tài khoản: ' . $user['full_name'] . ' (' . $roleLabel . ')',
+                'message' => 'Đã chuyển sang tài khoản: ' . $user['full_name'],
                 'user' => [
                     'id' => (int)$user['id'],
                     'name' => $user['full_name'],
                     'role' => $roleLabel,
+                    'plan' => $plan,
                     'email' => $user['email']
                 ]
             ]);
