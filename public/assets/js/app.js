@@ -2268,38 +2268,19 @@ function toggleBillingCycle(isYearly) {
     const proPeriod = document.getElementById('proPricePeriod');
     const proHint = document.getElementById('proYearlyHint');
 
-    const entPrice = document.getElementById('entPriceValue');
-    const entPeriod = document.getElementById('entPricePeriod');
-    const entHint = document.getElementById('entYearlyHint');
-
     if (isYearly) {
         if (proPrice) proPrice.innerText = '79.000 đ';
         if (proPeriod) proPeriod.innerText = '/ tháng (Trả cả năm)';
         if (proHint) proHint.style.display = 'block';
-
-        if (entPrice) entPrice.innerText = '239.000 đ';
-        if (entPeriod) entPeriod.innerText = '/ tháng (Trả cả năm)';
-        if (entHint) entHint.style.display = 'block';
     } else {
         if (proPrice) proPrice.innerText = '99.000 đ';
         if (proPeriod) proPeriod.innerText = '/ tháng';
         if (proHint) proHint.style.display = 'none';
-
-        if (entPrice) entPrice.innerText = '299.000 đ';
-        if (entPeriod) entPeriod.innerText = '/ tháng';
-        if (entHint) entHint.style.display = 'none';
     }
 }
 
 function changePlan(targetPlan) {
     upgradePlan(targetPlan);
-}
-
-function toggleFaq(el) {
-    const item = el.closest('.faq-item');
-    if (item) {
-        item.classList.toggle('open');
-    }
 }
 
 

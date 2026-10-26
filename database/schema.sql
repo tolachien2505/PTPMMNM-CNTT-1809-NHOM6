@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255),
     full_name VARCHAR(100) NOT NULL,
     role VARCHAR(20) DEFAULT 'student', -- 'admin', 'lecturer', 'student'
+    plan VARCHAR(20) DEFAULT 'FREE',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

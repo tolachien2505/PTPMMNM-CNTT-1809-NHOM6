@@ -82,6 +82,8 @@ $currentUser = $isLoggedIn ? [
     'plan' => $_SESSION['user_plan'] ?? 'FREE'
 ] : null;
 
+$userPlan = $currentUser['plan'] ?? ($_SESSION['user_plan'] ?? 'FREE');
+
 $validator = new SecurityValidator();
 $storage = new StorageService();
 $processor = new PdfProcessorService($validator, $storage, $pdo);
@@ -1303,9 +1305,8 @@ if (str_starts_with($requestUri, '/api/')) {
                 <div class="pricing-container">
                     <!-- Pricing Hero Section -->
                     <div class="pricing-hero">
-                        <div class="pricing-pill-badge">✨ Nâng cấp trải nghiệm tài liệu của bạn</div>
-                        <h1 class="pricing-hero-title">Chọn gói dịch vụ phù hợp với nhu cầu của bạn</h1>
-                        <p class="pricing-hero-subtitle">Tăng tốc xử lý tài liệu học tập, đồ án tốt nghiệp và hồ sơ nghiên cứu không giới hạn với sức mạnh của PDF Manager.</p>
+                        <h1 class="pricing-hero-title">Bảng Giá & Gói Dịch Vụ</h1>
+                        <p class="pricing-hero-subtitle">Mở khóa toàn bộ tính năng, nâng cao hiệu suất và trải nghiệm xử lý tài liệu không giới hạn.</p>
 
                         <!-- Billing Toggle -->
                         <div class="billing-toggle-wrapper">
@@ -1320,195 +1321,183 @@ if (str_starts_with($requestUri, '/api/')) {
                         </div>
                     </div>
 
-                    <!-- Pricing Cards Grid -->
-                    <div class="pricing-cards-grid">
-                        <!-- FREE TIER -->
-                        <div class="pricing-card <?= ($userPlan === 'FREE') ? 'current-tier' : '' ?>">
-                            <div class="card-plan-header">
-                                <div class="card-tier-name">Miễn phí (FREE)</div>
-                                <p class="card-tier-desc">Dành cho sinh viên và nhu cầu đọc, sắp xếp tài liệu cơ bản.</p>
-                                <div class="card-tier-price">
-                                    <span class="price-val">0 đ</span>
-                                    <span class="price-period">/ vĩnh viễn</span>
+                    <!-- 2 Cards Grid: FREE & PRO -->
+                    <div class="upgrade-cards-grid">
+                        <!-- 1. FREE CARD -->
+                        <div class="plan-card plan-free <?= ($userPlan === 'FREE') ? 'is-current' : '' ?>">
+                            <div class="plan-card-header">
+                                <div class="plan-header-top">
+                                    <div class="plan-badge-icon badge-free">
+                                        <svg viewBox="0 0 24 24" class="svg-plan-icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                                    </div>
+                                    <div class="plan-header-info">
+                                        <div class="plan-card-name-row">
+                                            <h2 class="plan-card-title free-title">FREE</h2>
+                                        </div>
+                                    </div>
                                 </div>
-                            </div>
-                            <div class="card-plan-features">
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Tối đa 5 tài liệu / ngày</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Dung lượng lưu trữ 1 GB</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Trình chỉnh sửa văn bản cơ bản</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Ghép & tách tài liệu tiêu chuẩn</div>
-                                <div class="feature-item disabled"><span class="feature-icon cross">✕</span> Không giới hạn số trang xử lý</div>
-                                <div class="feature-item disabled"><span class="feature-icon cross">✕</span> Xử lý siêu tốc không watermark</div>
-                                <div class="feature-item disabled"><span class="feature-icon cross">✕</span> Ký số & xác thực bảo mật</div>
-                            </div>
-                            <div class="card-plan-action">
-                                <?php if ($userPlan === 'FREE'): ?>
-                                    <button class="btn-tier-action btn-tier-current" disabled>Đang sử dụng</button>
-                                <?php else: ?>
-                                    <button class="btn-tier-action btn-tier-secondary" onclick="changePlan('FREE')">Chuyển về gói FREE</button>
-                                <?php endif; ?>
-                            </div>
-                        </div>
 
-                        <!-- PRO TIER (POPULAR) -->
-                        <div class="pricing-card popular <?= ($userPlan === 'PRO') ? 'current-tier' : '' ?>">
-                            <div class="popular-ribbon">🔥 PHỔ BIẾN NHẤT</div>
-                            <div class="card-plan-header">
-                                <div class="card-tier-name">Chuyên nghiệp (PRO)</div>
-                                <p class="card-tier-desc">Dành cho sinh viên đồ án, nghiên cứu sinh và giảng viên cần xử lý cường độ cao.</p>
-                                <div class="card-tier-price">
-                                    <span class="price-val" id="proPriceValue">99.000 đ</span>
-                                    <span class="price-period" id="proPricePeriod">/ tháng</span>
+                                <div class="plan-price-container free-price-bg">
+                                    <div class="plan-price-block">
+                                        <span class="plan-price-val free-val">0 đ</span>
+                                        <span class="plan-price-period">/ vĩnh viễn</span>
+                                    </div>
                                 </div>
-                                <div class="yearly-saving-hint" id="proYearlyHint" style="display: none;">Thanh toán 950.000 đ/năm (Tiết kiệm 238.000 đ)</div>
                             </div>
-                            <div class="card-plan-features">
-                                <div class="feature-item"><span class="feature-icon check">✓</span> <strong>Không giới hạn</strong> số lượng tài liệu</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> <strong>Dung lượng không giới hạn</strong> (Cloud SSD)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Trình biên tập trực quan nâng cao 100%</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Trình quản lý trang thông minh (Kéo thả, xoay)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Chữ ký điện tử & Ghi chú đóng dấu chuyên nghiệp</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> <strong>Xử lý nhanh gấp 5 lần</strong> (Ưu tiên hàng đợi)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Xuất file sạch đẹp, không watermark</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Hỗ trợ kỹ thuật ưu tiên 24/7</div>
+
+                            <div class="plan-card-body">
+                                <div class="plan-features-title free-title">Tính năng bao gồm:</div>
+                                <div class="plan-features-list">
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                                        </div>
+                                        <div class="feature-text">Tối đa 5 tài liệu / ngày</div>
+                                    </div>
+
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                                        </div>
+                                        <div class="feature-text">Công cụ chỉnh sửa PDF cơ bản</div>
+                                    </div>
+
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                                        </div>
+                                        <div class="feature-text">Ghép & Tách tài liệu chuẩn</div>
+                                    </div>
+
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                                        </div>
+                                        <div class="feature-text">Lưu trữ tài liệu 100MB</div>
+                                    </div>
+
+                                    <div class="plan-feature-item disabled">
+                                        <div class="feature-icon-box excluded">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                        </div>
+                                        <div class="feature-text">Không watermark khi xuất file</div>
+                                    </div>
+
+                                    <div class="plan-feature-item disabled">
+                                        <div class="feature-icon-box excluded">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                        </div>
+                                        <div class="feature-text">Hàng đợi ưu tiên & Hỗ trợ 24/7</div>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="card-plan-action">
-                                <?php if ($userPlan === 'PRO'): ?>
-                                    <button class="btn-tier-action btn-tier-current" disabled>⭐ Đang sử dụng gói PRO</button>
+
+                            <div class="plan-card-footer">
+                                <?php if ($userPlan === 'FREE'): ?>
+                                    <button class="btn-plan-action btn-free-current" disabled>
+                                        <span>✓ Bạn đang sử dụng gói này</span>
+                                    </button>
                                 <?php else: ?>
-                                    <button class="btn-tier-action btn-tier-primary" onclick="changePlan('PRO')">
-                                        <span>Nâng cấp PRO ngay</span>
-                                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                                    <button class="btn-plan-action btn-free-switch" onclick="changePlan('FREE')">
+                                        <span>Chuyển về gói Miễn phí</span>
                                     </button>
                                 <?php endif; ?>
                             </div>
                         </div>
 
-                        <!-- ENTERPRISE TIER -->
-                        <div class="pricing-card <?= ($userPlan === 'ENTERPRISE') ? 'current-tier' : '' ?>">
-                            <div class="card-plan-header">
-                                <div class="card-tier-name">Doanh nghiệp / Khoa viện</div>
-                                <p class="card-tier-desc">Dành cho nhóm nghiên cứu lớn, phòng ban hoặc toàn trường.</p>
-                                <div class="card-tier-price">
-                                    <span class="price-val" id="entPriceValue">299.000 đ</span>
-                                    <span class="price-period" id="entPricePeriod">/ tháng</span>
+                        <!-- 2. PRO CARD (POPULAR) -->
+                        <div class="plan-card plan-pro <?= ($userPlan === 'PRO') ? 'is-current' : '' ?>">
+                            <div class="plan-card-header">
+                                <div class="plan-header-top">
+                                    <div class="plan-badge-icon badge-pro">
+                                        <svg viewBox="0 0 24 24" class="svg-crown"><path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14v2H5v-2z" fill="currentColor"/></svg>
+                                    </div>
+                                    <div class="plan-header-info">
+                                        <div class="plan-card-name-row">
+                                            <h2 class="plan-card-title">PRO</h2>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="yearly-saving-hint" id="entYearlyHint" style="display: none;">Thanh toán 2.870.000 đ/năm (Tiết kiệm 718.000 đ)</div>
+
+                                <div class="plan-price-container pro-price-bg">
+                                    <div class="plan-price-block">
+                                        <span class="plan-price-val pro-val" id="proPriceValue">99.000 đ</span>
+                                        <span class="plan-price-period" id="proPricePeriod">/ tháng</span>
+                                    </div>
+                                    <div class="yearly-saving-hint" id="proYearlyHint" style="display: none;">
+                                        Thanh toán 950.000 đ/năm (Tiết kiệm 20% - 238.000 đ)
+                                    </div>
+                                </div>
                             </div>
-                            <div class="card-plan-features">
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Tất cả quyền lợi gói <strong>PRO</strong></div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Quản lý tài khoản nhóm (Tối đa 25 thành viên)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Phân quyền tài liệu & Thư mục dùng chung</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> REST API tích hợp trực tiếp vào hệ thống trường</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Nhật ký kiểm toán minh bạch (Audit Log)</div>
-                                <div class="feature-item"><span class="feature-icon check">✓</span> Quản lý viên hỗ trợ riêng (Dedicated Manager)</div>
+
+                            <div class="plan-card-body">
+                                <div class="plan-features-title pro-title">Toàn bộ đặc quyền cao cấp:</div>
+                                <div class="plan-features-list">
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box pro-included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                                        </div>
+                                        <div class="feature-text">Xử lý tài liệu không giới hạn</div>
+                                    </div>
+
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box pro-included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                                        </div>
+                                        <div class="feature-text">Đầy đủ công cụ chỉnh sửa PDF</div>
+                                    </div>
+
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box pro-included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                                        </div>
+                                        <div class="feature-text">Quản lý trang nâng cao</div>
+                                    </div>
+
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box pro-included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        </div>
+                                        <div class="feature-text">Xuất file chuẩn sắc nét, không watermark</div>
+                                    </div>
+
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box pro-included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+                                        </div>
+                                        <div class="feature-text">Lưu trữ đám mây & Đối chiếu nguồn gốc</div>
+                                    </div>
+
+                                    <div class="plan-feature-item">
+                                        <div class="feature-icon-box pro-included">
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                        </div>
+                                        <div class="feature-text">Hàng đợi ưu tiên & Hỗ trợ kỹ thuật 24/7</div>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="card-plan-action">
-                                <?php if ($userPlan === 'ENTERPRISE'): ?>
-                                    <button class="btn-tier-action btn-tier-current" disabled>Đang sử dụng Enterprise</button>
+
+                            <div class="plan-card-footer">
+                                <?php if ($userPlan === 'PRO'): ?>
+                                    <button class="btn-plan-action btn-pro-current" disabled>
+                                        <span>👑 Bạn đang sử dụng gói PRO</span>
+                                    </button>
                                 <?php else: ?>
-                                    <button class="btn-tier-action btn-tier-secondary" onclick="changePlan('ENTERPRISE')">Nâng cấp Enterprise</button>
+                                    <button class="btn-plan-action btn-pro-cta" id="btnUpgradeProCta" onclick="changePlan('PRO')">
+                                        <span class="cta-glow"></span>
+                                        <span class="cta-content">
+                                            <svg viewBox="0 0 24 24" class="svg-crown-sm"><path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14v2H5v-2z" fill="currentColor"/></svg>
+                                            <span>Nâng cấp PRO ngay</span>
+                                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                                        </span>
+                                    </button>
                                 <?php endif; ?>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Comparison Table -->
-                    <div class="comparison-section">
-                        <h3 class="comparison-title">Bảng so sánh chi tiết tính năng</h3>
-                        <div class="table-responsive">
-                            <table class="comparison-table">
-                                <thead>
-                                    <tr>
-                                        <th>Tính năng</th>
-                                        <th>Miễn phí (FREE)</th>
-                                        <th class="col-highlight">Chuyên nghiệp (PRO)</th>
-                                        <th>Doanh nghiệp</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr>
-                                        <td>Số lượng tài liệu xử lý</td>
-                                        <td>5 tài liệu / ngày</td>
-                                        <td class="col-highlight font-weight-bold">Không giới hạn</td>
-                                        <td>Không giới hạn</td>
-                                    </tr>
-                                    <tr>
-                                        <td>Dung lượng lưu trữ đám mây</td>
-                                        <td>1 GB</td>
-                                        <td class="col-highlight font-weight-bold">Không giới hạn</td>
-                                        <td>Không giới hạn</td>
-                                    </tr>
-                                    <tr>
-                                        <td>Trình biên tập PDFaid (Văn bản, Bút vẽ, Con dấu)</td>
-                                        <td>Cơ bản</td>
-                                        <td class="col-highlight text-success">✓ Đầy đủ công cụ</td>
-                                        <td class="text-success">✓ Đầy đủ công cụ</td>
-                                    </tr>
-                                    <tr>
-                                        <td>Trình quản lý trang (Xoay, Sắp xếp, Tách, Nhập)</td>
-                                        <td>Tối đa 10 trang</td>
-                                        <td class="col-highlight text-success">✓ Không giới hạn trang</td>
-                                        <td class="text-success">✓ Không giới hạn trang</td>
-                                    </tr>
-                                    <tr>
-                                        <td>Bảng đối chiếu nguồn tài liệu (Manifest)</td>
-                                        <td>Cơ bản</td>
-                                        <td class="col-highlight text-success">✓ Chi tiết từng trang</td>
-                                        <td class="text-success">✓ Chi tiết từng trang</td>
-                                    </tr>
-                                    <tr>
-                                        <td>Tốc độ xử lý hàng đợi</td>
-                                        <td>Tiêu chuẩn</td>
-                                        <td class="col-highlight font-weight-bold">Nhanh gấp 5 lần</td>
-                                        <td>Ưu tiên cao nhất</td>
-                                    </tr>
-                                    <tr>
-                                        <td>API & Quản lý nhóm đa người dùng</td>
-                                        <td class="text-muted">✕</td>
-                                        <td class="col-highlight text-muted">✕</td>
-                                        <td class="text-success">✓ Có sẵn</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <!-- FAQ Section -->
-                    <div class="pricing-faq-section">
-                        <h3 class="faq-title">Câu hỏi thường gặp</h3>
-                        <div class="faq-accordion">
-                            <div class="faq-item">
-                                <div class="faq-question" onclick="toggleFaq(this)">
-                                    <span>Tôi có thể hủy hoặc thay đổi gói bất cứ lúc nào không?</span>
-                                    <span class="faq-toggle-icon">+</span>
-                                </div>
-                                <div class="faq-answer">
-                                    Hoàn toàn có thể. Bạn có thể nâng cấp, hạ cấp hoặc hủy gói bất kỳ lúc nào ngay trong phần Cài đặt tài khoản. Không có phụ phí phát sinh nào.
-                                </div>
-                            </div>
-                            <div class="faq-item">
-                                <div class="faq-question" onclick="toggleFaq(this)">
-                                    <span>Phương thức thanh toán nào được hỗ trợ?</span>
-                                    <span class="faq-toggle-icon">+</span>
-                                </div>
-                                <div class="faq-answer">
-                                    Chúng tôi hỗ trợ chuyển khoản ngân hàng QR Code (VietQR / Napas 247), ví MoMo, ZaloPay, thẻ tín dụng / ghi nợ nội địa và quốc tế (Visa, Mastercard).
-                                </div>
-                            </div>
-                            <div class="faq-item">
-                                <div class="faq-question" onclick="toggleFaq(this)">
-                                    <span>Dữ liệu và tài liệu PDF của tôi có được bảo mật không?</span>
-                                    <span class="faq-toggle-icon">+</span>
-                                </div>
-                                <div class="faq-answer">
-                                    Tất cả tài liệu được mã hóa truyền tải theo chuẩn SSL/TLS và lưu trữ an toàn trong phân vùng riêng biệt của tài khoản bạn. Dữ liệu của bạn không bao giờ được chia sẻ với bất kỳ bên thứ ba nào.
-                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
+
 
             <!-- VIEW 5: LỊCH SỬ XUẤT -->
             <div id="view-history" class="workspace-view <?= $currentView === 'history' ? 'active' : '' ?>">

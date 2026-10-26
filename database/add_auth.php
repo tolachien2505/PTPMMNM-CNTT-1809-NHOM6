@@ -18,6 +18,11 @@ try {
             echo "[✓] Đã thêm cột password_hash vào SQLite" . PHP_EOL;
         }
 
+        if (!in_array('plan', $cols)) {
+            $sqlite->exec("ALTER TABLE users ADD COLUMN plan VARCHAR(20) DEFAULT 'FREE'");
+            echo "[✓] Đã thêm cột plan vào SQLite" . PHP_EOL;
+        }
+
         $defaultHash = password_hash('123456', PASSWORD_BCRYPT);
         $stmt = $sqlite->prepare("UPDATE users SET password_hash = ? WHERE password_hash IS NULL OR password_hash = ''");
         $stmt->execute([$defaultHash]);
