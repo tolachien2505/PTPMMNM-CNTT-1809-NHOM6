@@ -95,61 +95,61 @@ $checkMaintenance = function() {
 // 2. Tài liệu PDF (Documents)
 Route::get('/api/documents', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new DocumentController())->index();
+    (new DocumentController(Database::getPdo()))->index();
 });
 Route::post('/api/documents/upload', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new DocumentController())->upload();
+    (new DocumentController(Database::getPdo()))->upload();
 });
 Route::post('/api/documents/delete', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new DocumentController())->delete();
+    (new DocumentController(Database::getPdo()))->delete();
 });
 Route::post('/api/documents/status', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new DocumentController())->updateStatus();
+    (new DocumentController(Database::getPdo()))->updateStatus();
 });
 Route::get('/api/documents/raw', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new DocumentController())->raw();
+    (new DocumentController(Database::getPdo()))->raw();
 });
 
 // 3. Xuất bản PDF (Export & Process)
 Route::post('/api/export/save', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new ExportController())->save();
+    (new ExportController(Database::getPdo()))->save();
 });
 Route::post('/api/export/merge', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new ExportController())->merge();
+    (new ExportController(Database::getPdo()))->merge();
 });
 Route::post('/api/export/split', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new ExportController())->split();
+    (new ExportController(Database::getPdo()))->split();
 });
 Route::get('/api/export/history', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new ExportController())->history();
+    (new ExportController(Database::getPdo()))->history();
 });
 Route::get('/api/export/manifest', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new ExportController())->manifest();
+    (new ExportController(Database::getPdo()))->manifest();
 });
 Route::post('/api/export/delete', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new ExportController())->delete();
+    (new ExportController(Database::getPdo()))->delete();
 });
 Route::post('/api/export/clear-all', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new ExportController())->clearAll();
+    (new ExportController(Database::getPdo()))->clearAll();
 });
 Route::get('/api/export/preview', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new ExportController())->preview();
+    (new ExportController(Database::getPdo()))->preview();
 });
 Route::get('/api/download', function() use ($checkMaintenance) {
     $checkMaintenance();
-    (new ExportController())->download();
+    (new ExportController(Database::getPdo()))->download();
 });
 
 // 4. Thanh toán Client (VietQR & Check Status)

@@ -19,10 +19,10 @@ class ExportController
 
     public function __construct(?PDO $pdo = null)
     {
-        $this->pdo = $pdo;
+        $this->pdo = $pdo ?: \Database::getPdo();
         $validator = new SecurityValidator();
         $storage = new StorageService();
-        $this->processor = new PdfProcessorService($validator, $storage, $pdo);
+        $this->processor = new PdfProcessorService($validator, $storage, $this->pdo);
     }
 
     /**

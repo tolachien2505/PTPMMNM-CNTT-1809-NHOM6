@@ -16,7 +16,7 @@ class AuthController
 
     public function __construct(?PDO $pdo = null)
     {
-        $this->pdo = $pdo;
+        $this->pdo = $pdo ?: \Database::getPdo();
     }
 
     /**

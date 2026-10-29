@@ -6,11 +6,11 @@ return [
     'connections' => [
         'mysql' => [
             'driver' => 'mysql',
-            'host' => getenv('DB_HOST') ?: '103.200.23.68',
+            'host' => getenv('DB_HOST') ?: 'localhost',
             'port' => getenv('DB_PORT') ?: '3306',
-            'database' => getenv('DB_DATABASE') ?: 'ctoolnet_pdfonline123',
-            'username' => getenv('DB_USERNAME') ?: 'ctoolnet_pdfonline123',
-            'password' => getenv('DB_PASSWORD') !== false ? getenv('DB_PASSWORD') : 'ctoolnet_pdfonline123',
+            'database' => getenv('DB_DATABASE') ?: 'database',
+            'username' => getenv('DB_USERNAME') ?: 'database',
+            'password' => getenv('DB_PASSWORD') !== false ? getenv('DB_PASSWORD') : 'database',
             'charset' => 'utf8mb4',
             'collation' => 'utf8mb4_unicode_ci',
             'options' => [

@@ -18,7 +18,8 @@ if (file_exists($envFile)) {
     $envLines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($envLines as $line) {
         $line = trim($line);
-        if ($line === '' || str_starts_with($line, '#')) continue;
+        if ($line === '' || str_starts_with($line, '#'))
+            continue;
         if (str_contains($line, '=')) {
             [$k, $v] = explode('=', $line, 2);
             $k = trim($k);
@@ -44,7 +45,7 @@ class Database
         $config = require dirname(__DIR__) . '/config/database.php';
         $my = $config['connections']['mysql'];
 
-        // Cố gắng 1: Kết nối Remote MySQL theo .env (103.200.23.68 / ctoolnet_pdfonline123)
+        // Cố gắng 1: Kết nối Remote MySQL theo .env (localhost / database)
         try {
             self::$instance = new PDO(
                 "mysql:host={$my['host']};port={$my['port']};dbname={$my['database']};charset={$my['charset']}",
@@ -72,7 +73,8 @@ class Database
                         self::$instance = new PDO("sqlite:" . $sqPath);
                         self::$instance->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
                         return self::$instance;
-                    } catch (Exception $sqEx) {}
+                    } catch (Exception $sqEx) {
+                    }
                 }
             }
         }
@@ -101,7 +103,7 @@ function currentUser(): ?array
     }
 
     return [
-        'id' => (int)$_SESSION['user_id'],
+        'id' => (int) $_SESSION['user_id'],
         'name' => $_SESSION['user_name'] ?? 'Người dùng',
         'email' => $email,
         'username' => $_SESSION['username'] ?? '',
@@ -114,7 +116,8 @@ function currentUser(): ?array
 
 // 4. View Format Helpers
 if (!function_exists('formatDocStatus')) {
-    function formatDocStatus(?string $status): array {
+    function formatDocStatus(?string $status): array
+    {
         $st = strtolower(trim($status ?? 'uploaded'));
         if (in_array($st, ['error', 'corrupted', 'oversize', 'failed'])) {
             return ['class' => 'danger', 'text' => 'Lỗi tệp', 'code' => 'error'];
@@ -130,16 +133,21 @@ if (!function_exists('formatDocStatus')) {
 }
 
 if (!function_exists('formatDocSize')) {
-    function formatDocSize(int $bytes): string {
-        if ($bytes < 1024) return $bytes . ' B';
-        if ($bytes < 1048576) return round($bytes / 1024, 1) . ' KB';
+    function formatDocSize(int $bytes): string
+    {
+        if ($bytes < 1024)
+            return $bytes . ' B';
+        if ($bytes < 1048576)
+            return round($bytes / 1024, 1) . ' KB';
         return round($bytes / 1048576, 1) . ' MB';
     }
 }
 
 if (!function_exists('formatDocDate')) {
-    function formatDocDate(?string $datetime): string {
-        if (!$datetime) return date('d/m/Y H:i');
+    function formatDocDate(?string $datetime): string
+    {
+        if (!$datetime)
+            return date('d/m/Y H:i');
         return date('d/m/Y H:i', strtotime($datetime));
     }
 }
@@ -235,7 +243,8 @@ class Route
 
         foreach (self::$routes as $route) {
             $methodMatch = ($route['method'] === 'ANY' || $route['method'] === $requestMethod);
-            if (!$methodMatch) continue;
+            if (!$methodMatch)
+                continue;
 
             $routeUri = $route['uri'];
             if ($routeUri === $requestUri) {

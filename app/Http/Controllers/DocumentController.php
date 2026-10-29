@@ -20,7 +20,7 @@ class DocumentController
 
     public function __construct(?PDO $pdo = null)
     {
-        $this->pdo = $pdo;
+        $this->pdo = $pdo ?: \Database::getPdo();
         $this->validator = new SecurityValidator();
         $this->storage = new StorageService();
     }
