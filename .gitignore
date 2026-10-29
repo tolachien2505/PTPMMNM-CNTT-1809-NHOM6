@@ -22,9 +22,46 @@ composer.lock
 /database/*.sqlite
 /database/*.db
 
+# Database Migrations, One-off Scripts & Dumps
+/database/migrate_*.php
+/database/sync_*.php
+/database/remote_*.sql
+/database/*.bak
+/database/add_auth.php
+/database/init_db.php
+/database/schema_mysql.sql
+
+# Backup & Temporary files
+*.bak
+*.backup
+*.old
+*.tmp
+*.temp
+
+# Server Runtime State
+/storage/maintenance.json
+/storage/temp/*
+!/storage/temp/.gitkeep
+
+# Testing, Node & Dev Scripts
+/tests/
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
 # IDE & OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 *.log
+
+# Sensitive Credentials & Bank Secrets
+config/*.json
+!config/*.example.json
+/secrets/
+*.token
+*.pem
+*.key

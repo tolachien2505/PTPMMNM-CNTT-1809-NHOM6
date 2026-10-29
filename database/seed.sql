@@ -1,9 +1,10 @@
 -- Dữ liệu mẫu khởi tạo (Seed Data)
 
--- 1. Người dùng mẫu (Sinh viên & Giảng viên)
+-- 1. Người dùng mẫu (Người dùng & Quản trị viên)
 INSERT INTO users (id, username, email, full_name, role) VALUES
-(1, 'sinhvien_a', 'nguyenvana@dnu.edu.vn', 'Nguyễn Văn A', 'student'),
-(2, 'giangvien_b', 'tranthib@dnu.edu.vn', 'Trần Thị B', 'lecturer');
+(1, 'sinhvien_a', 'nguyenvana@dnu.edu.vn', 'Nguyễn Văn A', 'user'),
+(2, 'giangvien_b', 'tranthib@dnu.edu.vn', 'Trần Thị B', 'user'),
+(3, 'chien123hello', 'vvchien25@gmail.com', 'dsadas', 'admin');
 
 -- 2. Dữ liệu 6 tài liệu mẫu (khớp chính xác đề bài và ảnh demo: 6 tệp, 40 trang, 5 hợp lệ, 1 lỗi)
 INSERT INTO documents (id, user_id, original_name, stored_filename, file_size, total_pages, status, error_message, sha256_hash) VALUES

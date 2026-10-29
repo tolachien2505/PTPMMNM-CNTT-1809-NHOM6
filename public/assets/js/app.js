@@ -162,10 +162,10 @@ class PDFEditorState {
                         <span>Xoay</span>
                     </button>
                     <button class="btn-page-tool" onclick="editorState.toggleKeep(${index})" title="${page.keep ? 'Bỏ trang' : 'Giữ lại'}">
-                        ${page.keep 
-                            ? `<svg class="svg-icon svg-icon-sm" style="color: #EF4444;" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> <span>Bỏ</span>`
-                            : `<svg class="svg-icon svg-icon-sm" style="color: #10B981;" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span>Giữ</span>`
-                        }
+                        ${page.keep
+                    ? `<svg class="svg-icon svg-icon-sm" style="color: #EF4444;" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> <span>Bỏ</span>`
+                    : `<svg class="svg-icon svg-icon-sm" style="color: #10B981;" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span>Giữ</span>`
+                }
                     </button>
                 </div>
             `;
@@ -177,35 +177,53 @@ class PDFEditorState {
 const editorState = new PDFEditorState();
 
 // Danh sách các Route hợp lệ (không dùng hash #)
-const VALID_VIEWS = ['home', 'documents', 'editor', 'upgrade', 'history', 'settings'];
+const VALID_VIEWS = ['home', 'documents', 'editor', 'upgrade', 'history', 'settings', 'admin'];
 const LEGACY_VIEW_MAP = {
     'reorder': 'editor',
     'merge': 'editor',
     'split': 'editor'
 };
 
+// Quản lý phần tử Sidebar đang hoạt động (Client hoặc Admin)
+function getActiveSidebar() {
+    const layout = document.getElementById('appLayout');
+    const adminSidebar = document.getElementById('appSidebarAdmin');
+    const clientSidebar = document.getElementById('appSidebarClient');
+    if (layout && layout.classList.contains('portal-admin') && adminSidebar) {
+        return adminSidebar;
+    }
+    return clientSidebar || document.getElementById('appSidebar');
+}
+
 // Quản lý trạng thái thu gọn Sidebar (Chỉ hiện Icon: 72px)
 function toggleSidebarCompact() {
     const layout = document.getElementById('appLayout');
-    const sidebar = document.getElementById('appSidebar');
-    if (!layout || !sidebar) return;
+    if (!layout) return;
 
     const isCompact = layout.classList.toggle('sidebar-compact');
-    sidebar.classList.toggle('collapsed', isCompact);
+    if (document.getElementById('appSidebarClient')) {
+        document.getElementById('appSidebarClient').classList.toggle('collapsed', isCompact);
+    }
+    if (document.getElementById('appSidebarAdmin')) {
+        document.getElementById('appSidebarAdmin').classList.toggle('collapsed', isCompact);
+    }
     localStorage.setItem('sidebar_compact', isCompact ? 'true' : 'false');
 }
 
 function setSidebarCompact(compact) {
     const layout = document.getElementById('appLayout');
-    const sidebar = document.getElementById('appSidebar');
-    if (!layout || !sidebar) return;
+    if (!layout) return;
 
     if (compact) {
         layout.classList.add('sidebar-compact');
-        sidebar.classList.add('collapsed');
     } else {
         layout.classList.remove('sidebar-compact');
-        sidebar.classList.remove('collapsed');
+    }
+    if (document.getElementById('appSidebarClient')) {
+        document.getElementById('appSidebarClient').classList.toggle('collapsed', !!compact);
+    }
+    if (document.getElementById('appSidebarAdmin')) {
+        document.getElementById('appSidebarAdmin').classList.toggle('collapsed', !!compact);
     }
 }
 
@@ -220,11 +238,186 @@ function getPathView() {
         }
     }
     let cleanPath = window.location.pathname.replace(/^\/+|\/+$/g, '');
+    if (cleanPath === 'admin' || cleanPath.startsWith('admin/')) {
+        return cleanPath;
+    }
     if (LEGACY_VIEW_MAP[cleanPath]) cleanPath = LEGACY_VIEW_MAP[cleanPath];
     if (VALID_VIEWS.includes(cleanPath)) {
         return cleanPath;
     }
     return 'home';
+}
+
+/**
+ * Lấy Sidebar đang hoạt động dựa theo Cổng hiện tại (Client hoặc Admin)
+ */
+function getActiveSidebar() {
+    const isPortalAdmin = document.getElementById('appLayout')?.classList.contains('portal-admin');
+    return isPortalAdmin 
+        ? document.getElementById('appSidebarAdmin') 
+        : document.getElementById('appSidebarClient');
+}
+
+/**
+ * Chuyển đổi sang Cổng Quản trị Admin (Dedicated Admin Portal)
+ */
+function switchToAdminPortal(event, adminPage = 'dashboard') {
+    if (event && typeof event.preventDefault === 'function') {
+        event.preventDefault();
+    }
+    if (!window.APP_IS_ADMIN) {
+        showToast('Bạn không có quyền truy cập trang Quản trị Admin!', 'error');
+        return;
+    }
+
+    const layout = document.getElementById('appLayout');
+    const sbClient = document.getElementById('appSidebarClient');
+    const sbAdmin = document.getElementById('appSidebarAdmin');
+    const btnSwitchAdmin = document.getElementById('btnDdSwitchAdmin');
+    const btnSwitchClient = document.getElementById('btnDdSwitchClient');
+    const navClient = document.getElementById('mobileBottomNavClient');
+    const navAdmin = document.getElementById('mobileBottomNavAdmin');
+
+    if (layout) {
+        layout.classList.remove('portal-client');
+        layout.classList.add('portal-admin');
+    }
+    if (sbClient) sbClient.style.setProperty('display', 'none', 'important');
+    if (sbAdmin) sbAdmin.style.removeProperty('display');
+    if (btnSwitchAdmin) btnSwitchAdmin.style.setProperty('display', 'none', 'important');
+    if (btnSwitchClient) btnSwitchClient.style.removeProperty('display');
+    if (navClient) navClient.style.setProperty('display', 'none', 'important');
+    if (navAdmin) navAdmin.style.removeProperty('display');
+
+    // Kích hoạt View Admin
+    document.querySelectorAll('.workspace-view').forEach(v => v.classList.remove('active'));
+    const adminView = document.getElementById('view-admin');
+    if (adminView) adminView.classList.add('active');
+
+    // Chuyển tới trang admin con
+    switchAdminPage(adminPage, true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/**
+ * Chuyển về Website Client (Website Người dùng)
+ */
+function switchToClientPortal(event, clientView = 'home') {
+    if (event && typeof event.preventDefault === 'function') {
+        event.preventDefault();
+    }
+
+    const layout = document.getElementById('appLayout');
+    const sbClient = document.getElementById('appSidebarClient');
+    const sbAdmin = document.getElementById('appSidebarAdmin');
+    const btnSwitchAdmin = document.getElementById('btnDdSwitchAdmin');
+    const btnSwitchClient = document.getElementById('btnDdSwitchClient');
+    const navClient = document.getElementById('mobileBottomNavClient');
+    const navAdmin = document.getElementById('mobileBottomNavAdmin');
+
+    if (layout) {
+        layout.classList.remove('portal-admin');
+        layout.classList.add('portal-client');
+    }
+    if (sbAdmin) sbAdmin.style.setProperty('display', 'none', 'important');
+    if (sbClient) sbClient.style.removeProperty('display');
+    if (btnSwitchClient) btnSwitchClient.style.setProperty('display', 'none', 'important');
+    if (btnSwitchAdmin) btnSwitchAdmin.style.removeProperty('display');
+    if (navAdmin) navAdmin.style.setProperty('display', 'none', 'important');
+    if (navClient) navClient.style.removeProperty('display');
+
+    switchView(clientView, true);
+}
+
+/**
+ * Chuyển trang con trong Cổng Quản trị Admin (Dashboard, Users, Documents, Exports, Maintenance)
+ */
+function switchAdminPage(pageName, eventOrPush = true) {
+    if (eventOrPush && typeof eventOrPush.preventDefault === 'function') {
+        eventOrPush.preventDefault();
+    }
+    if (!window.APP_IS_ADMIN) return;
+
+    const validPages = ['dashboard', 'users', 'documents', 'exports', 'payments', 'plans', 'maintenance'];
+    if (!validPages.includes(pageName)) {
+        pageName = 'dashboard';
+    }
+
+    // Đảm bảo trạng thái layout và sidebar Admin hiển thị
+    const layout = document.getElementById('appLayout');
+    const sbClient = document.getElementById('appSidebarClient');
+    const sbAdmin = document.getElementById('appSidebarAdmin');
+    const navClient = document.getElementById('mobileBottomNavClient');
+    const navAdmin = document.getElementById('mobileBottomNavAdmin');
+
+    if (layout) {
+        layout.classList.remove('portal-client');
+        layout.classList.add('portal-admin');
+    }
+    if (sbClient) sbClient.style.setProperty('display', 'none', 'important');
+    if (sbAdmin) sbAdmin.style.removeProperty('display');
+    if (navClient) navClient.style.setProperty('display', 'none', 'important');
+    if (navAdmin) navAdmin.style.removeProperty('display');
+
+    // Đảm bảo view-admin active
+    document.querySelectorAll('.workspace-view').forEach(v => v.classList.remove('active'));
+    const adminView = document.getElementById('view-admin');
+    if (adminView) adminView.classList.add('active');
+
+    // Cập nhật trạng thái active sidebar Admin
+    document.querySelectorAll('#appSidebarAdmin .nav-item').forEach(item => {
+        const itemPage = item.getAttribute('data-admin-view');
+        item.classList.toggle('active', itemPage === pageName);
+    });
+
+    // Cập nhật trạng thái active thanh điều hướng dưới mobile Admin
+    document.querySelectorAll('#mobileBottomNavAdmin .mobile-nav-item').forEach(el => {
+        el.classList.toggle('active', el.getAttribute('data-admin-nav') === pageName);
+    });
+
+    // Cập nhật trạng thái active cho từng trang admin
+    document.querySelectorAll('.admin-page').forEach(page => {
+        page.classList.remove('active');
+    });
+    const targetPage = document.getElementById(`adminPage-${pageName}`);
+    if (targetPage) {
+        targetPage.classList.add('active');
+    }
+
+    if (pageName === 'plans' && typeof adminLoadPlans === 'function') {
+        adminLoadPlans();
+    } else if (pageName === 'maintenance' && typeof adminLoadMaintenanceStatus === 'function') {
+        adminLoadMaintenanceStatus();
+    }
+
+    // Cập nhật nút chuyển trong avatar dropdown
+    const btnSwitchAdmin = document.getElementById('btnDdSwitchAdmin');
+    const btnSwitchClient = document.getElementById('btnDdSwitchClient');
+    if (btnSwitchAdmin) btnSwitchAdmin.style.setProperty('display', 'none', 'important');
+    if (btnSwitchClient) btnSwitchClient.style.removeProperty('display');
+
+    // Tự động đóng menu trượt mobile nếu đang mở
+    const sidebar = getActiveSidebar();
+    const backdrop = document.getElementById('sidebarBackdrop');
+    if (sidebar && sidebar.classList.contains('open')) {
+        sidebar.classList.remove('open');
+        if (backdrop) backdrop.classList.remove('active');
+    }
+
+    // Cập nhật URL trình duyệt qua History API: /admin hoặc /admin/users ...
+    const shouldPush = (typeof eventOrPush === 'boolean') ? eventOrPush : true;
+    if (shouldPush) {
+        const targetPath = (pageName === 'dashboard') ? '/admin' : `/admin/${pageName}`;
+        if (window.location.pathname !== targetPath) {
+            window.history.pushState({ portal: 'admin', adminPage: pageName, view: 'admin' }, '', targetPath);
+        }
+    }
+
+    try {
+        sessionStorage.setItem('active_admin_page', pageName);
+    } catch (e) { }
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // Chuyển đổi View trong SPA và cập nhật URL sạch (không có #)
@@ -241,6 +434,36 @@ function switchView(viewName, eventOrPush = true) {
         viewName = 'home';
     }
 
+    if (viewName === 'admin') {
+        if (!window.APP_IS_ADMIN) {
+            showToast('Bạn không có quyền truy cập trang Quản trị Admin!', 'error');
+            viewName = 'home';
+        } else {
+            switchToAdminPortal(null, 'dashboard');
+            return;
+        }
+    }
+
+    // Đảm bảo hiển thị giao diện Client
+    const layout = document.getElementById('appLayout');
+    const sbClient = document.getElementById('appSidebarClient');
+    const sbAdmin = document.getElementById('appSidebarAdmin');
+    const btnSwitchAdmin = document.getElementById('btnDdSwitchAdmin');
+    const btnSwitchClient = document.getElementById('btnDdSwitchClient');
+    const navClient = document.getElementById('mobileBottomNavClient');
+    const navAdmin = document.getElementById('mobileBottomNavAdmin');
+
+    if (layout) {
+        layout.classList.remove('portal-admin');
+        layout.classList.add('portal-client');
+    }
+    if (sbAdmin) sbAdmin.style.setProperty('display', 'none', 'important');
+    if (sbClient) sbClient.style.removeProperty('display');
+    if (btnSwitchClient) btnSwitchClient.style.setProperty('display', 'none', 'important');
+    if (btnSwitchAdmin) btnSwitchAdmin.style.removeProperty('display');
+    if (navAdmin) navAdmin.style.setProperty('display', 'none', 'important');
+    if (navClient) navClient.style.removeProperty('display');
+
     const containerId = `view-${viewName}`;
 
     // Đổi hiển thị container View
@@ -250,17 +473,25 @@ function switchView(viewName, eventOrPush = true) {
         targetView.classList.add('active');
     }
 
-    // Cập nhật trạng thái active sidebar navigation
-    document.querySelectorAll('.nav-item').forEach(n => {
+    // Cập nhật trạng thái active client sidebar navigation
+    document.querySelectorAll('#appSidebarClient .nav-item').forEach(n => {
         const itemRoute = n.getAttribute('data-view') || n.getAttribute('href')?.replace(/^\//, '');
         n.classList.toggle('active', itemRoute === viewName);
     });
 
-    // Cập nhật trạng thái active mobile bottom navigation
-    document.querySelectorAll('.mobile-nav-item').forEach(m => {
+    // Cập nhật trạng thái active mobile bottom navigation client
+    document.querySelectorAll('#mobileBottomNavClient .mobile-nav-item').forEach(m => {
         const itemRoute = m.getAttribute('data-view') || m.getAttribute('href')?.replace(/^\//, '');
         m.classList.toggle('active', itemRoute === viewName);
     });
+
+    // Tự động đóng menu trượt mobile nếu đang mở
+    const sidebar = getActiveSidebar();
+    const backdrop = document.getElementById('sidebarBackdrop');
+    if (sidebar && sidebar.classList.contains('open')) {
+        sidebar.classList.remove('open');
+        if (backdrop) backdrop.classList.remove('active');
+    }
 
     // Cập nhật URL trình duyệt qua History API: /home, /documents, /editor, /upgrade... (không có #)
     const shouldPush = (typeof eventOrPush === 'boolean') ? eventOrPush : true;
@@ -269,14 +500,6 @@ function switchView(viewName, eventOrPush = true) {
         if (window.location.pathname !== targetPath || window.location.hash) {
             window.history.pushState({ view: viewName }, '', targetPath);
         }
-    }
-
-    // Tự động đóng menu trượt mobile nếu đang mở
-    const sidebar = document.getElementById('appSidebar');
-    const backdrop = document.getElementById('sidebarBackdrop');
-    if (sidebar && sidebar.classList.contains('open')) {
-        sidebar.classList.remove('open');
-        if (backdrop) backdrop.classList.remove('active');
     }
 
     // Hành động chuyên biệt từng view
@@ -288,8 +511,10 @@ function switchView(viewName, eventOrPush = true) {
             const docId = urlParams.get('docId') || localStorage.getItem('editor_current_doc_id');
             if (docId) {
                 const savedName = localStorage.getItem('editor_current_doc_name') || 'Tài liệu PDF';
-                const savedUrl = localStorage.getItem('editor_current_doc_url') || ('/api/documents/raw?id=' + docId);
+                const savedUrl = '/api/documents/raw?id=' + encodeURIComponent(docId);
                 loadRealPdf(savedUrl, savedName, docId);
+            } else if (localStorage.getItem('editor_local_source_id')) {
+                restoreLocalEditorDocument();
             } else {
                 showEditorUploadState();
             }
@@ -300,6 +525,8 @@ function switchView(viewName, eventOrPush = true) {
         loadExportHistory();
     } else if (viewName === 'documents') {
         filterDocumentsTable();
+    } else if (viewName === 'settings') {
+        initSettingsPage();
     }
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -307,8 +534,19 @@ function switchView(viewName, eventOrPush = true) {
 
 // Xử lý nút Back/Forward trên trình duyệt
 window.addEventListener('popstate', (e) => {
-    const view = (e.state && e.state.view) ? e.state.view : getPathView();
-    switchView(view, false);
+    const state = e.state;
+    if (state && state.portal === 'admin') {
+        switchToAdminPortal(null, state.adminPage || 'dashboard');
+        return;
+    }
+    const currentPath = window.location.pathname.replace(/^\/+|\/+$/g, '');
+    if (currentPath === 'admin' || currentPath.startsWith('admin/')) {
+        const sub = currentPath.split('/')[1] || 'dashboard';
+        switchToAdminPortal(null, sub);
+        return;
+    }
+    const view = (state && state.view) ? state.view : getPathView();
+    switchToClientPortal(null, view);
 });
 
 // Chặn các click vào liên kết nội bộ để chuyển view không cần tải lại trang
@@ -329,15 +567,33 @@ document.addEventListener('click', (e) => {
 
     if (href.startsWith('/') && !href.startsWith('/api') && !href.startsWith('/storage') && !link.hasAttribute('download') && link.target !== '_blank') {
         const target = href.replace(/^\/+|\/+$/g, '');
+        if (target === 'admin' || target.startsWith('admin/')) {
+            e.preventDefault();
+            const sub = target.split('/')[1] || 'dashboard';
+            switchToAdminPortal(null, sub);
+            return;
+        }
         if (VALID_VIEWS.includes(target)) {
             e.preventDefault();
-            switchView(target, true);
+            switchToClientPortal(null, target);
         }
     }
 });
 
 // Tự động chuẩn hóa URL và đồng bộ trạng thái Route khi tải trang
 function initCleanRouting() {
+    let currentPath = window.location.pathname.replace(/^\/+|\/+$/g, '');
+    if (currentPath === 'admin' || currentPath.startsWith('admin/')) {
+        if (!window.APP_IS_ADMIN) {
+            showToast('Bạn không có quyền truy cập trang Quản trị Admin!', 'error');
+            switchToClientPortal(null, 'home');
+            return;
+        }
+        const subPage = currentPath.split('/')[1] || window.APP_ADMIN_CURRENT_VIEW || 'dashboard';
+        switchToAdminPortal(null, subPage);
+        return;
+    }
+
     let targetView = 'home';
     if (window.location.hash && window.location.hash.length > 1) {
         let rawHash = window.location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0];
@@ -345,7 +601,6 @@ function initCleanRouting() {
         if (VALID_VIEWS.includes(rawHash)) targetView = rawHash;
         window.history.replaceState({ view: targetView }, '', '/' + targetView);
     } else {
-        let currentPath = window.location.pathname.replace(/^\/+|\/+$/g, '');
         if (LEGACY_VIEW_MAP[currentPath]) currentPath = LEGACY_VIEW_MAP[currentPath];
         if (VALID_VIEWS.includes(currentPath)) targetView = currentPath;
     }
@@ -353,11 +608,11 @@ function initCleanRouting() {
     const urlParams = new URLSearchParams(window.location.search);
     const docId = urlParams.get('docId') || localStorage.getItem('editor_current_doc_id');
 
-    switchView(targetView, false);
+    switchToClientPortal(null, targetView);
 
     if (targetView === 'editor' && docId && !hasLoadedFile) {
         const savedName = localStorage.getItem('editor_current_doc_name') || 'Tài liệu PDF';
-        const savedUrl = localStorage.getItem('editor_current_doc_url') || ('/api/documents/raw?id=' + docId);
+        const savedUrl = '/api/documents/raw?id=' + encodeURIComponent(docId);
         loadRealPdf(savedUrl, savedName, docId);
     }
 }
@@ -386,6 +641,13 @@ function closeModal(id) {
 }
 
 function openUploadModal() {
+    if (!window.APP_IS_LOGGED_IN) {
+        showToast('Vui lòng đăng nhập tài khoản để tải lên và lưu trữ tài liệu.', 'info');
+        if (typeof openAuthModal === 'function') {
+            openAuthModal('login');
+        }
+        return;
+    }
     openModal('uploadModal');
 }
 
@@ -504,50 +766,364 @@ async function executeStandardSplit() {
     }
 }
 
+// ==========================================
+// LỊCH SỬ XUẤT & ĐỐI CHIẾU NGUỒN (HISTORY)
+// ==========================================
+window._cachedExportHistory = [];
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function formatFileSizeStr(bytes) {
+    if (!bytes || isNaN(bytes)) return '0 KB';
+    bytes = parseInt(bytes);
+    if (bytes >= 1024 * 1024) {
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+    return Math.max(1, Math.round(bytes / 1024)) + ' KB';
+}
+
 // Tải lịch sử xuất
 async function loadExportHistory() {
     const tbody = document.getElementById('historyTableBody');
-    if (!tbody) return;
+    const mobileList = document.getElementById('historyMobileList');
+    if (!tbody && !mobileList) return;
+
+    if (!window.APP_IS_LOGGED_IN) {
+        const notLoggedInHtml = `
+            <div class="history-empty-state">
+                <div class="empty-state-icon">
+                    <svg class="svg-icon" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+                </div>
+                <h3>Chưa đăng nhập tài khoản</h3>
+                <p>Vui lòng đăng nhập để lưu trữ, xem lại các tệp PDF đã xuất và tra cứu bảng đối chiếu nguồn trang.</p>
+                <button type="button" class="btn-primary" onclick="openAuthModal('login')">
+                    Đăng nhập ngay
+                </button>
+            </div>
+        `;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="padding: 0;">${notLoggedInHtml}</td></tr>`;
+        if (mobileList) mobileList.innerHTML = notLoggedInHtml;
+        return;
+    }
+
+    const loadingHtml = `
+        <div class="history-loading-pulse">
+            <div class="history-spinner"></div>
+            <span>Đang tải dữ liệu lịch sử xuất...</span>
+        </div>
+    `;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 36px 20px;">${loadingHtml}</td></tr>`;
+    if (mobileList) mobileList.innerHTML = `<div style="padding: 30px; text-align: center;">${loadingHtml}</div>`;
 
     try {
         const res = await fetch('/api/export/history');
         const data = await res.json();
-        tbody.innerHTML = '';
+        
+        const items = data.data || data.history || [];
+        window._cachedExportHistory = items;
 
-        if (data.history && data.history.length > 0) {
-            data.history.forEach(item => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td>#${item.id}</td>
-                    <td>
-                        <div class="file-cell">
-                            <div class="file-icon-pdf">PDF</div>
-                            <span>${item.filename}</span>
-                        </div>
-                    </td>
-                    <td>${item.total_pages} trang</td>
-                    <td>${Math.round(item.file_size / 1024)} KB</td>
-                    <td>${item.created_at}</td>
-                    <td>
-                        <div class="actions-cell">
-                            <a href="/api/download?file=${encodeURIComponent(item.filename)}" class="btn-table-action" title="Tải xuống">
-                                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        // Cập nhật thẻ thống kê
+        const stats = data.stats || {};
+        const statCount = document.getElementById('historyStatTotalCount');
+        const statSize = document.getElementById('historyStatTotalSize');
+        const statPages = document.getElementById('historyStatTotalPages');
+        const statPlan = document.getElementById('historyStatPlan');
+
+        if (statCount) statCount.textContent = (stats.total_count !== undefined ? stats.total_count : items.length) + ' tệp';
+        if (statSize) statSize.textContent = (stats.total_size_mb !== undefined ? stats.total_size_mb : 0) + ' MB';
+        if (statPages) {
+            let totalPages = stats.total_pages;
+            if (totalPages === undefined) {
+                totalPages = items.reduce((acc, cur) => acc + (parseInt(cur.total_pages) || 0), 0);
+            }
+            statPages.textContent = totalPages + ' trang';
+        }
+        if (statPlan) {
+            const plan = (stats.plan || 'FREE').toUpperCase();
+            statPlan.innerHTML = plan === 'PRO' ? '<span class="badge-pro-pill">PRO</span>' : '<span class="pill-badge badge-secondary">FREE</span>';
+        }
+
+        renderExportHistoryUI(items);
+    } catch (e) {
+        console.error('loadExportHistory error:', e);
+        const errorHtml = `
+            <div class="history-empty-state">
+                <div class="empty-state-icon" style="background: #FEE2E2; color: #DC2626;">
+                    <svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                </div>
+                <h3>Lỗi kết nối máy chủ</h3>
+                <p>Không thể tải dữ liệu lịch sử xuất. Vui lòng thử lại sau.</p>
+                <button type="button" class="btn-outline" onclick="loadExportHistory()">
+                    Thử lại
+                </button>
+            </div>
+        `;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="padding: 0;">${errorHtml}</td></tr>`;
+        if (mobileList) mobileList.innerHTML = errorHtml;
+    }
+}
+
+// Render dữ liệu lịch sử cho cả Desktop Table và Mobile Cards
+function renderExportHistoryUI(items, isSearch = false) {
+    const tbody = document.getElementById('historyTableBody');
+    const mobileList = document.getElementById('historyMobileList');
+
+    if (!items || items.length === 0) {
+        const emptyMsg = isSearch 
+            ? 'Không tìm thấy tệp xuất nào khớp với từ khóa tìm kiếm.' 
+            : 'Chưa có tệp nào được xuất. Hãy thực hiện Ghép hoặc Tách PDF để xem lịch sử.';
+        
+        const emptyHtml = `
+            <div class="history-empty-state">
+                <div class="empty-state-icon">
+                    <svg class="svg-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                </div>
+                <h3>${emptyMsg}</h3>
+                <p>Tất cả các bản xuất PDF thành công sẽ được lưu trữ an toàn kèm dữ liệu đối chiếu nguồn minh bạch.</p>
+                <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 10px;">
+                    <button type="button" class="btn-primary" onclick="switchView('editor', event)">
+                        Mở Trình Biên Tập PDF
+                    </button>
+                    ${isSearch ? '<button type="button" class="btn-outline" onclick="clearHistorySearch()">Xóa bộ lọc</button>' : ''}
+                </div>
+            </div>
+        `;
+
+        if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="padding: 0;">${emptyHtml}</td></tr>`;
+        if (mobileList) mobileList.innerHTML = emptyHtml;
+        return;
+    }
+
+    // 1. Render Desktop Table
+    if (tbody) {
+        tbody.innerHTML = '';
+        items.forEach(item => {
+            const tr = document.createElement('tr');
+            tr.className = 'history-item-row';
+            tr.setAttribute('data-id', item.id);
+            tr.innerHTML = `
+                <td>
+                    <span class="history-id-badge">#${item.id}</span>
+                </td>
+                <td>
+                    <div class="history-file-cell">
+                        <div class="file-icon-pdf">PDF</div>
+                        <div class="history-file-info">
+                            <a href="/api/export/download?id=${item.id}" class="history-file-name" title="${escapeHtml(item.filename)}">
+                                ${escapeHtml(item.filename)}
                             </a>
-                            <button class="btn-table-action" title="Xem bảng đối chiếu" onclick="openManifestModal(${item.id})">
-                                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                                <span style="font-size: 0.75rem; margin-left: 4px;">Manifest</span>
-                            </button>
                         </div>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
+                    </div>
+                </td>
+                <td style="text-align: center;">
+                    <span class="pill-badge badge-pages">${item.total_pages || 1} trang</span>
+                </td>
+                <td style="text-align: center;">
+                    <span class="pill-badge badge-size">${formatFileSizeStr(item.file_size)}</span>
+                </td>
+                <td class="history-time-cell">
+                    <svg class="svg-icon svg-icon-xs text-muted" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    <span>${item.created_at || 'Vừa xong'}</span>
+                </td>
+                <td style="text-align: right;">
+                    <div class="history-actions-group">
+                        <button type="button" class="btn-action-pill btn-action-preview" onclick="openPreviewPdfModal(${item.id}, '${escapeHtml(item.filename)}')" title="Xem trước PDF">
+                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                            <span>Xem</span>
+                        </button>
+                        <a href="/api/export/download?id=${item.id}" class="btn-action-pill btn-action-download" title="Tải xuống tệp">
+                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            <span>Tải về</span>
+                        </a>
+                        <button type="button" class="btn-action-pill btn-action-manifest" onclick="openManifestModal(${item.id})" title="Xem bảng đối chiếu nguồn">
+                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                            <span>Nguồn</span>
+                        </button>
+                        <button type="button" class="btn-action-pill btn-action-delete" onclick="deleteExportHistoryItem(${item.id})" title="Xóa tệp khỏi lịch sử">
+                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        </button>
+                    </div>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    // 2. Render Mobile Card List
+    if (mobileList) {
+        mobileList.innerHTML = '';
+        items.forEach(item => {
+            const card = document.createElement('div');
+            card.className = 'history-mobile-card';
+            card.setAttribute('data-id', item.id);
+            card.innerHTML = `
+                <div class="mobile-card-header">
+                    <div class="mobile-card-meta">
+                        <span class="history-id-badge">#${item.id}</span>
+                        <span class="mobile-card-time">
+                            <svg class="svg-icon svg-icon-xs text-muted" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            ${item.created_at || 'Vừa xong'}
+                        </span>
+                    </div>
+                    <button type="button" class="btn-mobile-delete" onclick="deleteExportHistoryItem(${item.id})" title="Xóa tệp này">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                </div>
+                
+                <div class="mobile-card-body">
+                    <div class="mobile-card-file">
+                        <div class="file-icon-pdf">PDF</div>
+                        <div class="mobile-file-details">
+                            <a href="/api/export/download?id=${item.id}" class="mobile-filename">${escapeHtml(item.filename)}</a>
+                            <div class="mobile-badges-row">
+                                <span class="pill-badge badge-pages">${item.total_pages || 1} trang</span>
+                                <span class="pill-badge badge-size">${formatFileSizeStr(item.file_size)}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mobile-card-actions">
+                    <button type="button" class="btn-mobile-action btn-mobile-preview" onclick="openPreviewPdfModal(${item.id}, '${escapeHtml(item.filename)}')">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        <span>Xem</span>
+                    </button>
+                    <button type="button" class="btn-mobile-action btn-mobile-manifest" onclick="openManifestModal(${item.id})">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <span>Nguồn</span>
+                    </button>
+                    <a href="/api/export/download?id=${item.id}" class="btn-mobile-action btn-mobile-download">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        <span>Tải về</span>
+                    </a>
+                </div>
+            `;
+            mobileList.appendChild(card);
+        });
+    }
+}
+
+// Tìm kiếm lọc danh sách lịch sử theo thời gian thực
+function filterHistoryTable(term) {
+    const clearBtn = document.getElementById('historyClearSearch');
+    if (clearBtn) {
+        clearBtn.style.display = term && term.trim() ? 'block' : 'none';
+    }
+
+    if (!window._cachedExportHistory) return;
+
+    if (!term || !term.trim()) {
+        renderExportHistoryUI(window._cachedExportHistory);
+        return;
+    }
+
+    const q = term.toLowerCase().trim();
+    const filtered = window._cachedExportHistory.filter(item => {
+        const idStr = String(item.id || '');
+        const filename = (item.filename || '').toLowerCase();
+        const date = (item.created_at || '').toLowerCase();
+        return idStr.includes(q) || filename.includes(q) || date.includes(q);
+    });
+
+    renderExportHistoryUI(filtered, true);
+}
+
+// Xóa trắng ô tìm kiếm
+function clearHistorySearch() {
+    const input = document.getElementById('historySearchInput');
+    if (input) {
+        input.value = '';
+        filterHistoryTable('');
+    }
+}
+
+// Xóa 1 tệp xuất khỏi lịch sử
+async function deleteExportHistoryItem(id) {
+    if (!confirm('Bạn có chắc chắn muốn xóa tệp này khỏi lịch sử xuất? Tệp trên đĩa lưu trữ cũng sẽ được dọn dẹp.')) {
+        return;
+    }
+
+    try {
+        const formData = new FormData();
+        formData.append('id', id);
+
+        const res = await fetch('/api/export/delete', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+
+        if (data.status === 'success') {
+            showToast('✓ Đã xóa tệp khỏi lịch sử xuất!', 'success');
+            loadExportHistory();
         } else {
-            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #64748B; padding: 20px;">Chưa có tệp nào được xuất. Hãy thực hiện Ghép hoặc Tách PDF để xem lịch sử.</td></tr>`;
+            showToast('Lỗi: ' + (data.message || 'Không thể xóa tệp'), 'error');
         }
     } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #EF4444; padding: 20px;">Lỗi tải dữ liệu lịch sử.</td></tr>`;
+        console.error('Delete error:', e);
+        showToast('Lỗi kết nối khi xóa tệp.', 'error');
     }
+}
+
+// Xóa toàn bộ lịch sử xuất
+async function confirmClearAllHistory() {
+    if (!window._cachedExportHistory || window._cachedExportHistory.length === 0) {
+        showToast('Lịch sử hiện đang trống.', 'info');
+        return;
+    }
+
+    if (!confirm(`Bạn có chắc chắn muốn xóa toàn bộ ${window._cachedExportHistory.length} tệp trong lịch sử xuất? Thao tác này không thể hoàn tác!`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/export/clear-all', {
+            method: 'POST'
+        });
+        const data = await res.json();
+
+        if (data.status === 'success') {
+            showToast('✓ ' + (data.message || 'Đã dọn dẹp toàn bộ lịch sử xuất!'), 'success');
+            loadExportHistory();
+        } else {
+            showToast('Lỗi: ' + (data.message || 'Không thể xóa toàn bộ lịch sử'), 'error');
+        }
+    } catch (e) {
+        console.error('Clear all error:', e);
+        showToast('Lỗi kết nối khi dọn dẹp lịch sử.', 'error');
+    }
+}
+
+// Mở Modal xem trước tệp PDF xuất
+function openPreviewPdfModal(id, filename) {
+    const modal = document.getElementById('previewPdfModal');
+    const title = document.getElementById('previewPdfModalTitle');
+    const iframe = document.getElementById('previewPdfIframe');
+    const downloadBtn = document.getElementById('previewPdfModalDownloadBtn');
+
+    if (!modal) return;
+
+    if (title) title.textContent = filename || 'Xem trước tệp PDF #' + id;
+    if (iframe) iframe.src = `/api/export/preview?id=${id}`;
+    if (downloadBtn) downloadBtn.href = `/api/export/download?id=${id}`;
+
+    modal.style.display = 'flex';
+}
+
+// Đóng Modal xem trước tệp PDF xuất
+function closePreviewPdfModal() {
+    const modal = document.getElementById('previewPdfModal');
+    const iframe = document.getElementById('previewPdfIframe');
+    if (iframe) iframe.src = 'about:blank';
+    if (modal) modal.style.display = 'none';
 }
 
 // Mở modal đối chiếu Source Manifest
@@ -582,8 +1158,420 @@ async function openManifestModal(outputId) {
     }
 }
 
+function viewExportManifest(outputId) {
+    openManifestModal(outputId || window.currentOutputId);
+}
+
+// ==========================================
+// CÀI ĐẶT HỆ THỐNG & TÀI KHOẢN (SETTINGS)
+// ==========================================
+window._settingsChanged = false;
+
+function markSettingsChanged() {
+    window._settingsChanged = true;
+}
+
+// Chuyển đổi tab trong trang cài đặt
+function switchSettingsTab(tabName) {
+    document.querySelectorAll('.settings-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
+    });
+
+    document.querySelectorAll('.settings-tab-pane').forEach(pane => {
+        pane.classList.toggle('active', pane.id === `pane-${tabName}`);
+    });
+}
+
+// Khởi tạo và tải dữ liệu trang cài đặt
+async function initSettingsPage() {
+    // 1. Kiểm tra trạng thái theme hiện tại
+    const currentTheme = document.documentElement.getAttribute('data-theme') || localStorage.getItem('theme') || 'light';
+    selectAppTheme(currentTheme, false);
+
+    // 2. Tải cấu hình từ API hoặc LocalStorage
+    let loadedSettings = null;
+    try {
+        const res = await fetch('/api/user/settings');
+        const data = await res.json();
+        if (data.status === 'success') {
+            loadedSettings = data.settings;
+            if (data.profile) {
+                populateProfileFields(data.profile);
+            }
+            if (data.is_guest) {
+                const guestBanner = document.getElementById('settingsGuestBanner');
+                if (guestBanner) guestBanner.style.display = 'flex';
+                const pwForm = document.getElementById('passwordForm');
+                if (pwForm) {
+                    const btn = document.getElementById('btnChangePassword');
+                    if (btn) btn.disabled = true;
+                }
+            } else {
+                const guestBanner = document.getElementById('settingsGuestBanner');
+                if (guestBanner) guestBanner.style.display = 'none';
+            }
+        }
+    } catch (e) {
+        console.warn('Cannot load settings from API, fallback to localStorage', e);
+    }
+
+    if (!loadedSettings) {
+        const local = localStorage.getItem('pdf_system_settings');
+        if (local) {
+            try { loadedSettings = JSON.parse(local); } catch(e){}
+        }
+    }
+
+    // Áp dụng giá trị vào form cài đặt
+    if (loadedSettings) {
+        if (document.getElementById('setPdfDpi') && loadedSettings.pdf_dpi !== undefined) {
+            document.getElementById('setPdfDpi').value = loadedSettings.pdf_dpi;
+        }
+        if (document.getElementById('setPdfCompression') && loadedSettings.pdf_compression) {
+            document.getElementById('setPdfCompression').value = loadedSettings.pdf_compression;
+        }
+        if (document.getElementById('setAutoPageNumbers') && loadedSettings.auto_page_numbers !== undefined) {
+            document.getElementById('setAutoPageNumbers').checked = !!loadedSettings.auto_page_numbers;
+            togglePageNumberPos(!!loadedSettings.auto_page_numbers);
+        }
+        if (document.getElementById('setPageNumberPos') && loadedSettings.page_number_position) {
+            document.getElementById('setPageNumberPos').value = loadedSettings.page_number_position;
+        }
+        if (document.getElementById('setAutoOptimizeSize') && loadedSettings.auto_optimize_size !== undefined) {
+            document.getElementById('setAutoOptimizeSize').checked = !!loadedSettings.auto_optimize_size;
+        }
+        if (document.getElementById('setAutoCleanupHours') && loadedSettings.auto_cleanup_hours) {
+            document.getElementById('setAutoCleanupHours').value = loadedSettings.auto_cleanup_hours;
+        }
+        if (document.getElementById('setDeleteAfterExport') && loadedSettings.delete_after_export !== undefined) {
+            document.getElementById('setDeleteAfterExport').checked = !!loadedSettings.delete_after_export;
+        }
+        if (document.getElementById('setAutoCompactSidebar') && loadedSettings.auto_compact_sidebar !== undefined) {
+            document.getElementById('setAutoCompactSidebar').checked = !!loadedSettings.auto_compact_sidebar;
+        }
+        if (document.getElementById('setNotificationSound') && loadedSettings.notification_sound !== undefined) {
+            document.getElementById('setNotificationSound').checked = !!loadedSettings.notification_sound;
+        }
+    }
+
+    // Cập nhật số lượng tệp đã xuất trong mini card
+    const exportMini = document.getElementById('settingsExportCountMini');
+    if (exportMini) {
+        if (window._cachedExportHistory && window._cachedExportHistory.length > 0) {
+            exportMini.textContent = window._cachedExportHistory.length + ' tệp';
+        } else {
+            try {
+                const hRes = await fetch('/api/export/history');
+                const hData = await hRes.json();
+                const count = (hData.data || hData.history || []).length;
+                exportMini.textContent = count + ' tệp';
+            } catch(e) {
+                exportMini.textContent = '0 tệp';
+            }
+        }
+    }
+
+    window._settingsChanged = false;
+}
+
+function populateProfileFields(profile) {
+    if (!profile) return;
+    const nameEl = document.getElementById('setFullName');
+    const emailEl = document.getElementById('setEmail');
+    const phoneEl = document.getElementById('setPhone');
+    const dispName = document.getElementById('settingsProfileDisplayName');
+    const avatarBox = document.getElementById('settingsAvatarBox');
+
+    if (nameEl && profile.name) nameEl.value = profile.name;
+    if (emailEl && profile.email) emailEl.value = profile.email;
+    if (phoneEl && profile.phone) phoneEl.value = profile.phone;
+    if (dispName && profile.name) dispName.textContent = profile.name;
+    if (avatarBox && profile.name) {
+        avatarBox.textContent = profile.name.trim().substring(0, 2).toUpperCase();
+    }
+}
+
+// Ẩn/hiện chọn vị trí số trang
+function togglePageNumberPos(show) {
+    const wrap = document.getElementById('pageNumberPosWrap');
+    if (wrap) {
+        wrap.style.display = show ? 'flex' : 'none';
+    }
+}
+
+// Cập nhật thông tin hồ sơ
+async function handleProfileSubmit(e) {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+
+    const fullName = document.getElementById('setFullName')?.value.trim();
+    const email = document.getElementById('setEmail')?.value.trim();
+    const phone = document.getElementById('setPhone')?.value.trim();
+
+    if (!fullName) {
+        showToast('Vui lòng nhập họ và tên của bạn.', 'error');
+        return;
+    }
+    if (!email) {
+        showToast('Vui lòng nhập địa chỉ email.', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('btnSaveProfile');
+    const originalText = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span>Đang lưu...</span>';
+    }
+
+    try {
+        const res = await fetch('/api/user/profile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ full_name: fullName, email: email, phone: phone })
+        });
+        const data = await res.json();
+
+        if (data.status === 'success') {
+            showToast('✓ Cập nhật hồ sơ cá nhân thành công!', 'success');
+            const dispName = document.getElementById('settingsProfileDisplayName');
+            if (dispName) dispName.textContent = fullName;
+            const avatarBox = document.getElementById('settingsAvatarBox');
+            if (avatarBox) avatarBox.textContent = fullName.trim().substring(0, 2).toUpperCase();
+
+            // Cập nhật tên trên dropdown topbar
+            const topName = document.querySelector('.user-menu-btn span');
+            if (topName) topName.textContent = fullName;
+        } else {
+            showToast('Lỗi: ' + (data.message || 'Không thể lưu hồ sơ'), 'error');
+        }
+    } catch(err) {
+        console.error('Profile update error:', err);
+        showToast('Lỗi kết nối khi cập nhật hồ sơ.', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    }
+}
+
+// Đổi mật khẩu
+async function handlePasswordSubmit(e) {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+
+    const currentPassword = document.getElementById('setCurrentPassword')?.value;
+    const newPassword = document.getElementById('setNewPassword')?.value;
+    const confirmPassword = document.getElementById('setConfirmPassword')?.value;
+
+    if (!currentPassword || !newPassword) {
+        showToast('Vui lòng điền đầy đủ mật khẩu hiện tại và mật khẩu mới.', 'error');
+        return;
+    }
+    if (newPassword.length < 6) {
+        showToast('Mật khẩu mới phải có tối thiểu 6 ký tự.', 'error');
+        return;
+    }
+    if (newPassword !== confirmPassword) {
+        showToast('Xác nhận mật khẩu mới không khớp!', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('btnChangePassword');
+    const originalText = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span>Đang cập nhật...</span>';
+    }
+
+    try {
+        const res = await fetch('/api/user/change-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                current_password: currentPassword,
+                new_password: newPassword,
+                confirm_password: confirmPassword
+            })
+        });
+        const data = await res.json();
+
+        if (data.status === 'success') {
+            showToast('✓ Đổi mật khẩu thành công!', 'success');
+            document.getElementById('passwordForm')?.reset();
+            const strengthBox = document.getElementById('passwordStrengthBox');
+            if (strengthBox) strengthBox.style.display = 'none';
+        } else {
+            showToast('Lỗi: ' + (data.message || 'Không thể đổi mật khẩu'), 'error');
+        }
+    } catch(err) {
+        console.error('Password change error:', err);
+        showToast('Lỗi kết nối máy chủ khi đổi mật khẩu.', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    }
+}
+
+// Ẩn/Hiện mật khẩu
+function togglePasswordVisibility(inputId) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+// Kiểm tra độ mạnh mật khẩu
+function checkPasswordStrength(val) {
+    const box = document.getElementById('passwordStrengthBox');
+    const fill = document.getElementById('strengthBarFill');
+    const text = document.getElementById('strengthText');
+    if (!box || !fill || !text) return;
+
+    if (!val || val.length === 0) {
+        box.style.display = 'none';
+        return;
+    }
+    box.style.display = 'block';
+
+    let score = 0;
+    if (val.length >= 6) score += 25;
+    if (val.length >= 10) score += 25;
+    if (/[0-9]/.test(val)) score += 25;
+    if (/[A-Z]/.test(val) || /[^A-Za-z0-9]/.test(val)) score += 25;
+
+    fill.style.width = score + '%';
+    if (score <= 25) {
+        fill.style.background = '#EF4444';
+        text.textContent = 'Độ mạnh: Rất yếu (Cần thêm độ dài)';
+        text.style.color = '#EF4444';
+    } else if (score <= 50) {
+        fill.style.background = '#F59E0B';
+        text.textContent = 'Độ mạnh: Trung bình (Nên thêm số hoặc ký tự hoa)';
+        text.style.color = '#D97706';
+    } else if (score <= 75) {
+        fill.style.background = '#3B82F6';
+        text.textContent = 'Độ mạnh: Khá tốt';
+        text.style.color = '#2563EB';
+    } else {
+        fill.style.background = '#10B981';
+        text.textContent = 'Độ mạnh: Rất mạnh (Tuyệt vời)';
+        text.style.color = '#059669';
+    }
+}
+
+// Chọn giao diện Sáng / Tối
+function selectAppTheme(theme, doSave = true) {
+    const lightCard = document.getElementById('themeCardLight');
+    const darkCard = document.getElementById('themeCardDark');
+
+    if (lightCard) lightCard.classList.toggle('selected', theme === 'light');
+    if (darkCard) darkCard.classList.toggle('selected', theme === 'dark');
+
+    if (typeof setTheme === 'function') {
+        setTheme(theme);
+    } else {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('theme', theme);
+    }
+
+    if (doSave) {
+        markSettingsChanged();
+    }
+}
+
+// Lưu tất cả thiết lập
+async function saveAllSettings() {
+    const settingsObj = {
+        pdf_dpi: parseInt(document.getElementById('setPdfDpi')?.value || '150'),
+        pdf_compression: document.getElementById('setPdfCompression')?.value || 'medium',
+        auto_page_numbers: document.getElementById('setAutoPageNumbers')?.checked ?? true,
+        page_number_position: document.getElementById('setPageNumberPos')?.value || 'bottom-right',
+        auto_optimize_size: document.getElementById('setAutoOptimizeSize')?.checked ?? true,
+        auto_cleanup_hours: parseInt(document.getElementById('setAutoCleanupHours')?.value || '24'),
+        delete_after_export: document.getElementById('setDeleteAfterExport')?.checked ?? false,
+        auto_compact_sidebar: document.getElementById('setAutoCompactSidebar')?.checked ?? true,
+        notification_sound: document.getElementById('setNotificationSound')?.checked ?? true,
+        theme: document.documentElement.getAttribute('data-theme') || 'light'
+    };
+
+    localStorage.setItem('pdf_system_settings', JSON.stringify(settingsObj));
+
+    try {
+        await fetch('/api/user/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ settings: settingsObj })
+        });
+    } catch(e) {
+        console.warn('API save settings error:', e);
+    }
+
+    showToast('✓ Đã lưu toàn bộ cấu hình cài đặt hệ thống thành công!', 'success');
+    window._settingsChanged = false;
+}
+
+// Khôi phục cài đặt về mặc định
+function resetSettingsToDefault() {
+    if (!confirm('Bạn có chắc chắn muốn khôi phục toàn bộ tùy chọn xử lý và giao diện về giá trị mặc định ban đầu không?')) {
+        return;
+    }
+
+    if (document.getElementById('setPdfDpi')) document.getElementById('setPdfDpi').value = '150';
+    if (document.getElementById('setPdfCompression')) document.getElementById('setPdfCompression').value = 'medium';
+    if (document.getElementById('setAutoPageNumbers')) {
+        document.getElementById('setAutoPageNumbers').checked = true;
+        togglePageNumberPos(true);
+    }
+    if (document.getElementById('setPageNumberPos')) document.getElementById('setPageNumberPos').value = 'bottom-right';
+    if (document.getElementById('setAutoOptimizeSize')) document.getElementById('setAutoOptimizeSize').checked = true;
+    if (document.getElementById('setAutoCleanupHours')) document.getElementById('setAutoCleanupHours').value = '24';
+    if (document.getElementById('setDeleteAfterExport')) document.getElementById('setDeleteAfterExport').checked = false;
+    if (document.getElementById('setAutoCompactSidebar')) document.getElementById('setAutoCompactSidebar').checked = true;
+    if (document.getElementById('setNotificationSound')) document.getElementById('setNotificationSound').checked = true;
+
+    selectAppTheme('light', false);
+    saveAllSettings();
+    showToast('✓ Đã khôi phục cài đặt mặc định thành công!', 'info');
+}
+
+// Xóa cache PDF nội bộ trình duyệt
+function clearLocalPdfCache() {
+    try {
+        localStorage.removeItem('editor_current_doc_id');
+        localStorage.removeItem('editor_current_doc_name');
+        localStorage.removeItem('editor_current_doc_url');
+        localStorage.removeItem('editor_local_source_id');
+        localStorage.removeItem('editor_pdf_raw_cache');
+        sessionStorage.clear();
+        showToast('✓ Đã xóa sạch bộ nhớ đệm trình duyệt!', 'success');
+    } catch(e) {
+        showToast('Lỗi khi dọn dẹp bộ nhớ đệm.', 'error');
+    }
+}
+
+// Xóa toàn bộ tài liệu cá nhân
+async function confirmPurgeAllDocuments() {
+    if (!confirm('CẢNH BÁO NGUY HIỂM: Bạn có chắc chắn muốn xóa TOÀN BỘ tài liệu PDF trong kho tài liệu của bạn không? Thao tác này không thể hoàn tác!')) {
+        return;
+    }
+
+    showToast('Đang điều hướng đến trang Quản lý tài liệu để hoàn tất...', 'info');
+    setTimeout(() => {
+        switchView('documents');
+    }, 700);
+}
+
 // Xử lý tải lên file
 async function handleFileSelect(event) {
+    if (!window.APP_IS_LOGGED_IN) {
+        showToast('Vui lòng đăng nhập tài khoản để tải lên và lưu trữ tài liệu.', 'info');
+        if (typeof openAuthModal === 'function') {
+            openAuthModal('login');
+        }
+        return;
+    }
+
     const file = event.target.files[0];
     if (!file) return;
 
@@ -821,7 +1809,18 @@ async function handleAuthLogin(event) {
             closeModal('authModal');
             showToast(`✓ ${data.message}`, 'success');
             setTimeout(() => {
-                window.location.href = '/home';
+                const isAdmin = data.user && (data.user.role === 'admin' || data.user.is_admin === true);
+                if (isAdmin) {
+                    if (window.location.pathname.startsWith('/admin')) {
+                        window.location.reload();
+                    } else if (window.APP_MAINTENANCE_ACTIVE) {
+                        window.location.href = '/admin';
+                    } else {
+                        window.location.href = '/home';
+                    }
+                } else {
+                    window.location.href = '/home';
+                }
             }, 600);
         } else {
             showToast(data.message || 'Đăng nhập không thành công.', 'error');
@@ -942,6 +1941,87 @@ let editorPages = [];
 let currentPdfDoc = null;
 let currentPdfBytes = null;
 let isPdfRendering = false;
+let editorSources = new Map();
+let editorRenderPending = false;
+let editorDraftRecoveryBlocked = false;
+let editorLoadInProgress = false;
+
+async function restoreLocalEditorDocument() {
+    const id = localStorage.getItem('editor_local_source_id');
+    if (!id || editorLoadInProgress || hasLoadedFile) return;
+    editorLoadInProgress = true;
+    try {
+        await restoreEditorSource(id);
+        const source = editorSources.get(id);
+        await loadRealPdf(source.bytes.buffer.slice(0), source.name);
+        localStorage.setItem('editor_local_source_id', id);
+    } catch (err) {
+        console.error('Không thể khôi phục tệp cục bộ:', err);
+        showToast('Không thể khôi phục tệp PDF cục bộ: ' + err.message, 'error');
+    } finally { editorLoadInProgress = false; }
+}
+
+function editorSourceDatabase() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('pdf-editor-sources', 1);
+        request.onupgradeneeded = () => request.result.createObjectStore('sources', { keyPath: 'id' });
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function persistEditorSource(source) {
+    const db = await editorSourceDatabase();
+    try {
+        await new Promise((resolve, reject) => {
+            const transaction = db.transaction('sources', 'readwrite');
+            transaction.objectStore('sources').put({ id: source.id, name: source.name, bytes: source.bytes });
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error || new Error('Không thể lưu nguồn PDF.'));
+        });
+    } finally { db.close(); }
+}
+
+async function restoreEditorSource(id) {
+    const db = await editorSourceDatabase();
+    let saved;
+    try {
+        saved = await new Promise((resolve, reject) => {
+            const request = db.transaction('sources', 'readonly').objectStore('sources').get(id);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    } finally { db.close(); }
+    if (!saved || !saved.bytes) throw new Error('Thiếu PDF nguồn ' + id);
+    const bytes = new Uint8Array(saved.bytes);
+    const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    editorSources.set(id, { id, name: saved.name, bytes, doc });
+}
+
+function editorSourceForPage(page) {
+    return page && page.sourceId ? editorSources.get(page.sourceId) : { doc: currentPdfDoc, bytes: currentPdfBytes, name: currentDocumentName };
+}
+
+async function createEditorSource(file) {
+    if (!file || !/\.pdf$/i.test(file.name)) throw new Error('Vui lòng chọn tệp PDF hợp lệ.');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    const id = 'source-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random());
+    const source = { id, name: file.name, bytes, doc };
+    editorSources.set(id, source);
+    try { await persistEditorSource(source); }
+    catch (err) { editorSources.delete(id); await doc.destroy(); throw new Error('Không thể lưu PDF nhập thêm để khôi phục sau khi tải lại: ' + err.message); }
+    return source;
+}
+
+function pagesFromEditorSource(source) {
+    return Array.from({ length: source.doc.numPages }, (_, index) => ({
+        id: 'page-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random()),
+        sourceId: source.id, originalPageNum: index + 1, title: `${source.name} — trang ${index + 1}`,
+        rotation: 0, elements: [], drawings: [], textEdits: {}
+    }));
+}
 
 // Configure Mozilla PDF.js Worker
 if (window.pdfjsLib) {
@@ -984,8 +2064,10 @@ async function loadRealPdf(source, docName = '', docId = null) {
             arrayBuffer = await source.arrayBuffer();
 
             // Lưu lên máy chủ và MySQL ngay lập tức
-            if (source instanceof File) {
+            if (source instanceof File && window.APP_IS_LOGGED_IN) {
                 try {
+                    const validation = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer.slice(0)) }).promise;
+                    await validation.destroy();
                     const fd = new FormData();
                     fd.append('file', source);
                     const upRes = await fetch('/api/documents/upload', { method: 'POST', body: fd });
@@ -994,6 +2076,8 @@ async function loadRealPdf(source, docName = '', docId = null) {
                         docId = upData.document.id;
                         currentDocumentName = upData.document.name || currentDocumentName;
                         console.log('✓ File đã được lưu vào storage & MySQL, docId =', docId);
+                    } else {
+                        showToast('Tệp chỉ mở cục bộ, chưa lưu lên máy chủ: ' + (upData.message || 'Lỗi tải lên.'), 'error');
                     }
                 } catch (ue) {
                     console.warn('Lỗi lưu tệp lên backend:', ue);
@@ -1002,7 +2086,15 @@ async function loadRealPdf(source, docName = '', docId = null) {
         } else if (typeof source === 'string') {
             currentDocumentName = docName || source.split('/').pop().split('?')[0] || 'tailieu.pdf';
             const res = await fetch(source);
-            if (!res.ok) throw new Error(`HTTP ${res.status}: Không thể nạp tệp từ máy chủ.`);
+            if (!res.ok) {
+                localStorage.removeItem('editor_current_doc_id');
+                localStorage.removeItem('editor_current_doc_url');
+                localStorage.removeItem('editor_current_doc_name');
+                if (window.history && window.history.replaceState) {
+                    window.history.replaceState({ view: 'editor' }, '', '/editor');
+                }
+                throw new Error(`HTTP ${res.status}: Không thể nạp tệp từ máy chủ.`);
+            }
             arrayBuffer = await res.arrayBuffer();
         } else if (source instanceof ArrayBuffer) {
             arrayBuffer = source;
@@ -1017,6 +2109,10 @@ async function loadRealPdf(source, docName = '', docId = null) {
         currentPdfBytes = new Uint8Array(arrayBuffer.slice(0));
         const pdfJsBuffer = new Uint8Array(arrayBuffer.slice(0));
 
+        if (window.pdfjsLib && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/vendor/pdfjs/pdf.worker.min.js';
+        }
+
         const loadingTask = pdfjsLib.getDocument({
             data: pdfJsBuffer,
             cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
@@ -1024,35 +2120,72 @@ async function loadRealPdf(source, docName = '', docId = null) {
             standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/'
         });
         currentPdfDoc = await loadingTask.promise;
+        editorSources = new Map();
+        editorDraftRecoveryBlocked = false;
+        editorHistoryStack = [];
+        editorRedoStack = [];
+        if (!docId && source instanceof File) {
+            const localSource = { id: 'local-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random()), name: currentDocumentName, bytes: currentPdfBytes, doc: currentPdfDoc };
+            try {
+                await persistEditorSource(localSource);
+                editorSources.set(localSource.id, localSource);
+                localStorage.setItem('editor_local_source_id', localSource.id);
+            } catch (err) {
+                console.warn('Không thể lưu tệp cục bộ để khôi phục:', err);
+                localStorage.removeItem('editor_local_source_id');
+                showToast('Tệp chưa được lưu; không thể khôi phục PDF gốc sau khi tải lại.', 'error');
+            }
+        } else {
+            localStorage.removeItem('editor_local_source_id');
+        }
 
         hasLoadedFile = true;
 
         // Lưu thông tin tệp vào LocalStorage và đồng bộ URL query (/editor?docId=...)
+        const draftKey = docId ? ('doc_' + docId) : ('file_' + currentDocumentName.replace(/[^a-zA-Z0-9_-]/g, '_'));
         if (docId) {
+            window.currentDocumentId = docId;
             localStorage.setItem('editor_current_doc_id', docId);
             localStorage.setItem('editor_current_doc_name', currentDocumentName);
             localStorage.setItem('editor_current_doc_url', '/api/documents/raw?id=' + docId);
             if (window.history && window.history.replaceState) {
                 window.history.replaceState({ view: 'editor', docId: docId }, '', '/editor?docId=' + docId);
             }
+        } else if (typeof source === 'string') {
+            window.currentDocumentId = null;
+            localStorage.removeItem('editor_current_doc_id');
+            localStorage.setItem('editor_current_doc_name', currentDocumentName);
+            localStorage.setItem('editor_current_doc_url', source);
+        } else {
+            window.currentDocumentId = null;
+            localStorage.removeItem('editor_current_doc_id');
+            localStorage.removeItem('editor_current_doc_url');
+            localStorage.setItem('editor_current_doc_name', currentDocumentName);
         }
 
         // Kiểm tra xem có bản nháp nào được lưu trước đó của tài liệu này không
         editorPages = [];
         let hasRestoredDraft = false;
-        if (docId) {
-            try {
-                const savedDraft = localStorage.getItem('editor_draft_' + docId);
-                if (savedDraft) {
-                    const parsedDraft = JSON.parse(savedDraft);
-                    if (Array.isArray(parsedDraft) && parsedDraft.length > 0) {
-                        editorPages = parsedDraft;
-                        hasRestoredDraft = true;
-                    }
+        try {
+            const savedDraft = localStorage.getItem('editor_draft_' + draftKey) || (docId ? localStorage.getItem('editor_draft_' + docId) : null);
+            if (savedDraft) {
+                const parsedDraft = JSON.parse(savedDraft);
+                if (Array.isArray(parsedDraft) && parsedDraft.length > 0) {
+                    for (const id of new Set(parsedDraft.map(p => p.sourceId).filter(Boolean))) await restoreEditorSource(id);
+                    editorPages = parsedDraft;
+                    // Luôn dọn sạch cache text cũ để áp dụng thuật toán gom cụm đoạn văn chuẩn PDFaid
+                    editorPages.forEach(p => {
+                        delete p._cachedTextItems;
+                        if (p.elements) {
+                            p.elements = p.elements.filter(el => el.type !== 'text' || (el.text && el.text.trim() !== 'Gõ nội dung tại đây...'));
+                        }
+                    });
+                    hasRestoredDraft = true;
                 }
-            } catch (de) {
-                console.warn('Lỗi đọc nháp từ LocalStorage:', de);
             }
+        } catch (de) {
+            editorDraftRecoveryBlocked = true;
+            console.warn('Lỗi đọc nháp từ LocalStorage:', de);
         }
 
         // Nếu chưa có bản nháp, tạo trang mặc định theo số trang thực của PDF
@@ -1071,6 +2204,10 @@ async function loadRealPdf(source, docName = '', docId = null) {
             }
         }
 
+        if (editorDraftRecoveryBlocked) {
+            console.warn('Không thể khôi phục bản nháp có nguồn PDF đã nhập trong phiên trước.');
+            showToast('Bản nháp có PDF nhập thêm không thể khôi phục sau khi tải lại; dữ liệu nháp vẫn được giữ.', 'error');
+        }
         editorCurrentPage = 1;
         updateEditorFloatingInfo();
         setupCanvasInteractions();
@@ -1087,6 +2224,12 @@ async function loadRealPdf(source, docName = '', docId = null) {
     } catch (err) {
         console.error('Lỗi nạp PDF:', err);
         showToast(`Lỗi nạp tệp PDF: ${err.message}`, 'error');
+        localStorage.removeItem('editor_current_doc_id');
+        localStorage.removeItem('editor_current_doc_url');
+        localStorage.removeItem('editor_current_doc_name');
+        if (window.history && window.history.replaceState) {
+            window.history.replaceState({ view: 'editor' }, '', '/editor');
+        }
         showEditorUploadState();
     } finally {
         if (overlay) overlay.style.display = 'none';
@@ -1107,20 +2250,6 @@ function handleHeroFileInput(event) {
 }
 
 function handleHeroFileDrop(event) {
-    event.preventDefault();
-    const dt = event.dataTransfer;
-    if (dt && dt.files && dt.files.length > 0) {
-        loadRealPdf(dt.files[0], dt.files[0].name);
-    }
-}
-
-function handleEditorFileImport(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    loadRealPdf(file, file.name);
-}
-
-function handleEditorFileDrop(event) {
     event.preventDefault();
     const dt = event.dataTransfer;
     if (dt && dt.files && dt.files.length > 0) {
@@ -1154,7 +2283,7 @@ async function renderEditorThumbnails() {
     }
 
     list.innerHTML = '';
-    
+
     editorPages.forEach((pageData, index) => {
         const item = document.createElement('div');
         item.className = `strip-thumb-item ${pageData.pageNumber === editorCurrentPage ? 'active' : ''}`;
@@ -1217,8 +2346,9 @@ async function renderEditorThumbnails() {
                         return;
                     }
 
-                    const pageNum = Math.min(pageData.originalPageNum || pageData.pageNumber, currentPdfDoc.numPages);
-                    const page = await currentPdfDoc.getPage(pageNum);
+                    const source = editorSourceForPage(pageData);
+                    if (!source || !source.doc) throw new Error('Không tìm thấy PDF nguồn của trang.');
+                    const page = await source.doc.getPage(pageData.originalPageNum);
                     const unscaled = page.getViewport({ scale: 1.0 });
                     const scale = 110 / unscaled.width;
                     const rot = (page.rotate + (pageData.rotation || 0)) % 360;
@@ -1239,7 +2369,7 @@ async function renderEditorThumbnails() {
                         card.innerHTML = '';
                         card.appendChild(canvas);
                     }
-                } catch (e) {}
+                } catch (e) { }
             })();
         }
     });
@@ -1248,14 +2378,14 @@ async function renderEditorThumbnails() {
 function selectEditorPage(pageNum) {
     if (pageNum < 1 || pageNum > editorPages.length) return;
     editorCurrentPage = pageNum;
-    
+
     document.querySelectorAll('.strip-thumb-item').forEach(el => el.classList.remove('active'));
     const activeItem = document.getElementById(`thumbItem_${pageNum}`);
     if (activeItem) {
         activeItem.classList.add('active');
         activeItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
-    
+
     renderEditorCanvas();
     updateEditorFloatingInfo();
 }
@@ -1286,6 +2416,7 @@ function updateEditorFloatingInfo() {
 
 // Render nội dung trang PDF thực tế qua Mozilla PDF.js Canvas sắc nét
 async function renderEditorCanvas() {
+    if (isPdfRendering) { editorRenderPending = true; return; }
     const pageData = editorPages.find(p => p.pageNumber === editorCurrentPage) || editorPages[0];
     if (!pageData) return;
 
@@ -1299,8 +2430,9 @@ async function renderEditorCanvas() {
 
     if (pageData.isBlankPage || !pageData.originalPageNum) {
         // Xử lý trang trắng mới thêm độc lập: Không tải trang nào từ PDF gốc
-        const pageWidth = 595;
-        const pageHeight = 842;
+        const sideways = Math.abs(pageData.rotation || 0) % 180 === 90;
+        const pageWidth = sideways ? 842 : 595;
+        const pageHeight = sideways ? 595 : 842;
         const viewport = { width: pageWidth * editorZoom, height: pageHeight * editorZoom };
         const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
         canvas.width = Math.floor(viewport.width * pixelRatio);
@@ -1308,8 +2440,10 @@ async function renderEditorCanvas() {
         canvas.style.width = `${Math.floor(viewport.width)}px`;
         canvas.style.height = `${Math.floor(viewport.height)}px`;
 
-        annotLayer.style.width = `${Math.floor(viewport.width)}px`;
-        annotLayer.style.height = `${Math.floor(viewport.height)}px`;
+        annotLayer.style.width = `${pageWidth}px`;
+        annotLayer.style.height = `${pageHeight}px`;
+        annotLayer.style.transformOrigin = 'top left';
+        annotLayer.style.transform = `scale(${editorZoom})`;
 
         if (drawingCanvas) {
             drawingCanvas.width = Math.floor(viewport.width * pixelRatio);
@@ -1349,14 +2483,15 @@ async function renderEditorCanvas() {
     }
 
     if (currentPdfDoc) {
-        if (isPdfRendering) return;
+        if (isPdfRendering) { editorRenderPending = true; return; }
         isPdfRendering = true;
         if (overlay) overlay.style.display = 'flex';
 
         try {
-            const pageNum = Math.min(pageData.originalPageNum || pageData.pageNumber, currentPdfDoc.numPages);
-            const page = await currentPdfDoc.getPage(pageNum);
-            
+            const source = editorSourceForPage(pageData);
+            if (!source || !source.doc) throw new Error('Không tìm thấy PDF nguồn của trang.');
+            const page = await source.doc.getPage(pageData.originalPageNum);
+
             // Xoay góc: góc gốc của trang + góc người dùng xoay
             const effRot = (page.rotate + (pageData.rotation || 0)) % 360;
             const viewport = page.getViewport({ scale: editorZoom, rotation: effRot });
@@ -1367,8 +2502,10 @@ async function renderEditorCanvas() {
             canvas.style.width = `${Math.floor(viewport.width)}px`;
             canvas.style.height = `${Math.floor(viewport.height)}px`;
 
-            annotLayer.style.width = `${Math.floor(viewport.width)}px`;
-            annotLayer.style.height = `${Math.floor(viewport.height)}px`;
+            annotLayer.style.width = `${viewport.width / editorZoom}px`;
+            annotLayer.style.height = `${viewport.height / editorZoom}px`;
+            annotLayer.style.transformOrigin = 'top left';
+            annotLayer.style.transform = `scale(${editorZoom})`;
 
             if (drawingCanvas) {
                 drawingCanvas.width = Math.floor(viewport.width * pixelRatio);
@@ -1401,6 +2538,11 @@ async function renderEditorCanvas() {
         } finally {
             isPdfRendering = false;
             if (overlay) overlay.style.display = 'none';
+            if (editorRenderPending) {
+                editorRenderPending = false;
+                renderEditorCanvas();
+                return;
+            }
         }
     }
 
@@ -1425,7 +2567,7 @@ async function renderEditorCanvas() {
 
 // Render lớp chỉnh sửa trực tiếp chữ gốc của PDF (Khớp 100% Ảnh 1)
 // Hàm nhận diện và ánh xạ chính xác phông chữ từ PDF sang CSS
-function mapPdfFontToCss(fontName, stylesObj) {
+function mapPdfFontToCss(fontName, stylesObj, fontObj) {
     let resolvedFamily = '';
     let isBold = false;
     let isItalic = false;
@@ -1433,40 +2575,54 @@ function mapPdfFontToCss(fontName, stylesObj) {
     if (stylesObj && stylesObj[fontName]) {
         resolvedFamily = stylesObj[fontName].fontFamily || '';
     }
-    const combined = (resolvedFamily + ' ' + (fontName || '')).toLowerCase();
+    const realFontName = (fontObj && fontObj.name) ? fontObj.name : '';
+    const combined = (realFontName + ' ' + resolvedFamily + ' ' + (fontName || '')).toLowerCase();
 
-    // Nhận diện kiểu chữ đậm (Bold) và nghiêng (Italic) chính xác
-    isBold = /(?:^|[^a-z])(?:bold|black|heavy|w[789]|b\b)|-bold|_bold|boldmt/i.test(combined);
-    isItalic = /(?:^|[^a-z])(?:italic|oblique|slant|it\b)|-italic|_italic|italicmt/i.test(combined);
+    // Nhận diện kiểu chữ đậm (Bold) và nghiêng (Italic) chính xác 100% từ tên font gốc PostScript
+    isBold = /(?:^|[^a-z])(?:bold|black|heavy|w[789]|b\b)|-bold|_bold|boldmt/i.test(combined) || !!(fontObj && fontObj.bold);
+    isItalic = /(?:^|[^a-z])(?:italic|oblique|slant|it\b)|-italic|_italic|italicmt/i.test(combined) || !!(fontObj && fontObj.italic);
 
-    let family = "'Times New Roman', Times, 'Liberation Serif', serif";
+    let family = "Arial, sans-serif";
 
     // 1. Phông chữ Monospace
     if (/courier|mono|consolas|menlo|source code|fira code/i.test(combined)) {
         family = "'Courier New', Courier, monospace";
     }
-    // 2. Phông chữ Sans-Serif (Kiểm tra trước Serif vì "sans-serif" chứa chữ "serif")
-    else if (/sans-serif|arial|helvetica|calibri|roboto|tahoma|verdana|open sans|myriad|trebuchet|inter|segoe/i.test(combined)) {
-        family = "Arial, Helvetica, 'Liberation Sans', sans-serif";
+    // 2. Phông chữ Cambria
+    else if (/cambria/i.test(combined)) {
+        family = "Cambria, 'Times New Roman', serif";
     }
-    // 3. Phông chữ Serif / Times
-    else if (/times|roman|georgia|cambria|minion|garamond|baskerville|\bserif\b/i.test(combined)) {
-        family = "'Times New Roman', Times, 'Liberation Serif', serif";
-    } else {
-        // Fallback kiểm tra resolvedFamily từ PDF.js styles
-        if (/\bserif\b/i.test(resolvedFamily) && !/sans/i.test(resolvedFamily)) {
-            family = "'Times New Roman', Times, 'Liberation Serif', serif";
-        } else if (/sans/i.test(resolvedFamily)) {
-            family = "Arial, Helvetica, 'Liberation Sans', sans-serif";
+    // 3. Phông chữ Georgia / Minion Pro
+    else if (/minion|georgia|garamond|baskerville/i.test(combined)) {
+        family = "Georgia, serif";
+    }
+    // 4. Phông chữ Serif / Times
+    else if (/times|roman|\bserif\b/i.test(combined)) {
+        family = "'Times New Roman', Times, serif";
+    }
+    // 5. Phông chữ Sans-Serif (Arial / Helvetica / Inter / Roboto / Calibri / Segoe)
+    else if (/sans-serif|arial|helvetica|calibri|roboto|tahoma|verdana|open sans|myriad|trebuchet|inter|segoe/i.test(combined)) {
+        if (/helvetica/i.test(combined)) {
+            family = "Helvetica, Arial, sans-serif";
+        } else if (/inter/i.test(combined)) {
+            family = "'Inter', sans-serif";
+        } else if (/roboto/i.test(combined)) {
+            family = "'Roboto', sans-serif";
         } else {
-            family = "'Times New Roman', Times, 'Liberation Serif', serif";
+            family = "Arial, sans-serif";
+        }
+    } else {
+        if (/\bserif\b/i.test(resolvedFamily) && !/sans/i.test(resolvedFamily)) {
+            family = "'Times New Roman', Times, serif";
+        } else {
+            family = "Arial, sans-serif";
         }
     }
 
-    return { family, isBold, isItalic };
+    return { family, isBold, isItalic, realFontName };
 }
 
-// Đồng bộ trạng thái phông chữ, cỡ chữ, căn lề của khối được chọn lên thanh ribbon
+// Đồng bộ trạng thái phông chữ, cỡ chữ, căn lề, màu chữ và màu nền che lên thanh ribbon
 function syncTextPropertiesToRibbon(item) {
     if (!item) return;
     const fontSelect = document.getElementById('editorFontFamily');
@@ -1476,10 +2632,32 @@ function syncTextPropertiesToRibbon(item) {
         for (const opt of fontSelect.options) {
             const optVal = opt.value.toLowerCase();
             const optTxt = opt.text.toLowerCase();
-            if ((itemFont.includes('times') && (optVal.includes('times') || optTxt.includes('times'))) ||
-                (itemFont.includes('arial') && (optVal.includes('arial') || optTxt.includes('arial'))) ||
-                (itemFont.includes('helvetica') && (optVal.includes('helvetica') || optTxt.includes('helvetica'))) ||
-                (itemFont.includes('courier') && (optVal.includes('courier') || optTxt.includes('courier')))) {
+            if (itemFont.includes('cambria') && (optVal.includes('cambria') || optTxt.includes('cambria'))) {
+                fontSelect.value = opt.value;
+                matched = true;
+                break;
+            }
+            if (itemFont.includes('times') && (optVal.includes('times') || optTxt.includes('times'))) {
+                fontSelect.value = opt.value;
+                matched = true;
+                break;
+            }
+            if (itemFont.includes('helvetica') && (optVal.includes('helvetica') || optTxt.includes('helvetica'))) {
+                fontSelect.value = opt.value;
+                matched = true;
+                break;
+            }
+            if (itemFont.includes('arial') && (optVal.includes('arial') || optTxt.includes('arial'))) {
+                fontSelect.value = opt.value;
+                matched = true;
+                break;
+            }
+            if (itemFont.includes('courier') && (optVal.includes('courier') || optTxt.includes('courier'))) {
+                fontSelect.value = opt.value;
+                matched = true;
+                break;
+            }
+            if (itemFont.includes('georgia') && (optVal.includes('georgia') || optTxt.includes('georgia'))) {
                 fontSelect.value = opt.value;
                 matched = true;
                 break;
@@ -1493,12 +2671,13 @@ function syncTextPropertiesToRibbon(item) {
                 }
             }
         }
+        editorFontFamily = fontSelect.value;
     }
 
     const sizeSelect = document.getElementById('editorStrokeOrFontSize');
     if (sizeSelect && item.fontSize) {
         const targetSize = Math.round(item.fontSize);
-        let bestOpt = sizeSelect.options[0]?.value || '12';
+        let bestOpt = sizeSelect.options[0]?.value || '14';
         let minDiff = 999;
         for (const opt of sizeSelect.options) {
             const v = parseInt(opt.value, 10);
@@ -1509,6 +2688,7 @@ function syncTextPropertiesToRibbon(item) {
             }
         }
         sizeSelect.value = bestOpt;
+        editorFontSize = parseInt(bestOpt, 10);
     }
 
     const boldBtn = document.getElementById('btnFormatBold');
@@ -1520,12 +2700,82 @@ function syncTextPropertiesToRibbon(item) {
     if (italicBtn) {
         italicBtn.classList.toggle('active', !!item.isItalic);
     }
+
+    // Đồng bộ căn lề
+    const align = item.align || 'left';
+    ['btnAlignLeft', 'btnAlignCenter', 'btnAlignRight'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.classList.remove('active');
+    });
+    if (align === 'left' && document.getElementById('btnAlignLeft')) document.getElementById('btnAlignLeft').classList.add('active');
+    if (align === 'center' && document.getElementById('btnAlignCenter')) document.getElementById('btnAlignCenter').classList.add('active');
+    if (align === 'right' && document.getElementById('btnAlignRight')) document.getElementById('btnAlignRight').classList.add('active');
+
+    // Đồng bộ màu chữ (Text color)
+    const curColor = item.color || item.textColor;
+    if (curColor) {
+        document.querySelectorAll('#propModeText .color-swatch').forEach(s => {
+            const c = s.style.getPropertyValue('--c');
+            s.classList.toggle('active', !!(c && c.toLowerCase() === curColor.toLowerCase()));
+        });
+        const customPicker = document.getElementById('editorCustomColorPicker');
+        if (customPicker && curColor.startsWith('#') && curColor.length >= 7) {
+            customPicker.value = curColor;
+        }
+    }
+
+    // Đồng bộ màu nền che (Background cover color)
+    const bgSelect = document.getElementById('editorTextBgColorSelect');
+    if (bgSelect && item.bgColor) {
+        let found = false;
+        for (const opt of bgSelect.options) {
+            if (opt.value.toLowerCase() === item.bgColor.toLowerCase()) {
+                bgSelect.value = opt.value;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            bgSelect.value = 'custom';
+            const bgCustom = document.getElementById('editorTextBgCustomColor');
+            if (bgCustom && item.bgColor.startsWith('#') && item.bgColor.length >= 7) {
+                bgCustom.style.display = 'inline-block';
+                bgCustom.value = item.bgColor;
+            }
+        }
+    }
 }
 
 // Hàm dọn dẹp các ký tự vỡ trực tiếp từ PDF raw stream
 function cleanPdfRawString(str) {
     if (!str) return '';
     let s = str;
+
+    // Phục hồi các cụm từ tiếng Việt thường bị vỡ mã CMap hoặc dính \uFFFD trong PDF
+    s = s.replace(/th\s*ự\s*c\s*t\s*[\uFFFDế]\s*/gi, 'thực tế ');
+    s = s.replace(/kh\s*ả\s*o\s*s\s*á\s*t\s*th\s*ự\s*c\s*t\s*[\uFFFDế]\s*/gi, 'khảo sát thực tế ');
+    s = s.replace(/kinh\s*t\s*[\uFFFDế]\s*/gi, 'kinh tế ');
+    s = s.replace(/qu\s*ố\s*c\s*t\s*[\uFFFDế]\s*/gi, 'quốc tế ');
+    s = s.replace(/v\s*ấ\s*n\s*đ\s*[\uFFFDề]\s*/gi, 'vấn đề ');
+    s = s.replace(/nghi\s*[\uFFFDê]\s*n\s*c\s*ứ\s*u/gi, 'nghiên cứu ');
+    s = s.replace(/y\s*ế\s*[\uFFFDu]\s*t\s*[\uFFFDố]\s*/gi, 'yếu tố ');
+    s = s.replace(/nh\s*â\s*n\s*t\s*[\uFFFDố]\s*/gi, 'nhân tố ');
+    s = s.replace(/ph\s*á\s*t\s*tri\s*[\uFFFDể]\s*n/gi, 'phát triển ');
+    s = s.replace(/Ch\s*í\s*nh\s*s\s*á\s*ch/gi, 'Chính sách');
+    s = s.replace(/t\s*à\s*i\s*ch\s*í\s*nh/gi, 'tài chính');
+    s = s.replace(/ng\s*â\s*n\s*h\s*à\s*ng/gi, 'ngân hàng');
+    s = s.replace(/l\s*ự\s*a\s*ch\s*ọ\s*n/gi, 'lựa chọn');
+    s = s.replace(/ngh\s*ề\s*nghi\s*ệ\s*p/gi, 'nghề nghiệp');
+    s = s.replace(/H\s*ọ\s*c\s*vi\s*ệ\s*n/gi, 'Học viện');
+    s = s.replace(/th\s*ị\s*tr\s*ư\s*ờ\s*ng/gi, 'thị trường');
+    s = s.replace(/gi\s*ả\s*i\s*ph\s*á\s*p/gi, 'giải pháp');
+    s = s.replace(/k\s*i\s*ế\s*n\s*ngh\s*ị/gi, 'kiến nghị');
+    s = s.replace(/sinh\s*vi\s*ê\s*n/gi, 'sinh viên');
+    s = s.replace(/gi\s*ả\s*ng\s*vi\s*ê\s*n/gi, 'giảng viên');
+    s = s.replace(/C\s*ơ\s*s\s*ở\s*d\s*ữ\s*li\s*ệ\s*u/gi, 'Cơ sở dữ liệu');
+    s = s.replace(/M\s*ã\s*ngu\s*ồ\s*n\s*m\s*ở/gi, 'Mã nguồn mở');
+    s = s.replace(/Qu\s*ả\s*n\s*tr\s*ị/gi, 'Quản trị');
+    s = s.replace(/Ch\s*ư\s*ơ\s*ng/gi, 'Chương');
 
     s = s.replace(/yế\uFFFD\s*u/gi, 'yếu');
     s = s.replace(/yế\uFFFD/gi, 'yếu');
@@ -1552,6 +2802,9 @@ function cleanPdfRawString(str) {
     s = s.replace(/tì\uFFFD/gi, 'tìm');
     s = s.replace(/thì\uFFFD/gi, 'thì');
 
+    // Dọn sạch hoàn toàn các ký tự \uFFFD rác còn sót lại
+    s = s.replace(/\uFFFD/g, '');
+
     return s;
 }
 
@@ -1562,14 +2815,33 @@ function postProcessMergedText(text) {
 
     // 1. Phục hồi ngữ nghĩa các từ tiếng Việt bị vỡ tổ hợp dấu hoặc ký tự \uFFFD
     s = s.replace(/\byế\s*u\b/gi, 'yếu');
-    s = s.replace(/yế\s*u\s*t\s*o\s*\uFFFD?/gi, 'yếu tố');
-    s = s.replace(/yếu\s*t\s*o\s*\uFFFD?/gi, 'yếu tố');
-    s = s.replace(/nhân\s*t\s*o\s*\uFFFD?/gi, 'nhân tố');
+    s = s.replace(/yế\s*u\s*t\s*o\s*\uFFFD?/gi, 'yếu tố ');
+    s = s.replace(/yếu\s*t\s*o\s*\uFFFD?/gi, 'yếu tố ');
+    s = s.replace(/yếu tố(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'yếu tố ');
+    s = s.replace(/nhân\s*t\s*o\s*\uFFFD?/gi, 'nhân tố ');
+    s = s.replace(/nhân tố(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'nhân tố ');
     s = s.replace(/\bt\s*o\s*\uFFFD/gi, 'tố');
     s = s.replace(/\bto\uFFFD/gi, 'tố');
+    s = s.replace(/hư\s+ởng/gi, 'hưởng');
+    s = s.replace(/ảnh\s+hưởng(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'ảnh hưởng ');
     s = s.replace(/ngh\s*ế\s*\uFFFD?\s*nghiệp/gi, 'nghề nghiệp');
     s = s.replace(/ngh\s*ế\s*\uFFFD/gi, 'nghề');
+    s = s.replace(/ngh\s+[ếê]\b/gi, 'nghề');
+    s = s.replace(/ngh\s+[ếê]\s+nghiệp/gi, 'nghề nghiệp');
     s = s.replace(/nghế\uFFFD/gi, 'nghề');
+    s = s.replace(/đ\s+[ếê]\s+xuất/gi, 'đề xuất');
+    s = s.replace(/\bv\s+[ếê]\b/gi, 'về');
+    s = s.replace(/\bđ\s+[ếê]\b/gi, 'để');
+    s = s.replace(/\bđúng về(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'đúng về ');
+    s = s.replace(/\bchuyên ngành(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'chuyên ngành ');
+    s = s.replace(/\btài chính(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'tài chính ');
+    s = s.replace(/\bngân hàng(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'ngân hàng ');
+    s = s.replace(/\bhọc viện(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'học viện ');
+    s = s.replace(/\bchính sách(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'chính sách ');
+    s = s.replace(/\bphát triển(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'phát triển ');
+    s = s.replace(/\blựa chọn(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'lựa chọn ');
+    s = s.replace(/\bsinh viên(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'sinh viên ');
+    s = s.replace(/\bngành nghề(?=[a-zA-Z\u00C0-\u1EF9])/gi, 'ngành nghề ');
     s = s.replace(/ch\s*ì\s*\uFFFD?\s*nh/gi, 'chính');
     s = s.replace(/chì\uFFFD\s*nh/gi, 'chính');
     s = s.replace(/tri\s*ế\s*\uFFFD?\s*n/gi, 'triển');
@@ -1695,7 +2967,179 @@ function postProcessMergedText(text) {
     return s.trim();
 }
 
-// Render lớp chỉnh sửa trực tiếp chữ gốc của PDF (Khớp 100% Ảnh 1)
+// Hàm tự động lấy mẫu màu nền (Background) và màu chữ (Text ink) từ Canvas để không bị đè vệt trắng
+function sampleBlockBgAndTextColor(canvas, item, zoom) {
+    const fallback = {
+        bgColor: '#FFFFFF',
+        textColor: '#0F172A',
+        isUniform: true
+    };
+    if (!canvas) return fallback;
+
+    try {
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return fallback;
+
+        const cssWidth = parseFloat(canvas.style.width) || canvas.width;
+        const dpr = canvas.width / cssWidth;
+        const scale = (zoom || 1.0) * dpr;
+
+        const cX = Math.round(item.left * scale);
+        const cY = Math.round(item.top * scale);
+        const cW = Math.round(item.width * scale);
+        const cH = Math.round(item.height * scale);
+
+        // Lấy mẫu các điểm viền bao quanh khối chữ (Perimeter sampling)
+        // Khu vực viền ngoài nét chữ chứa chính xác màu nền của trang PDF hoặc slide trình chiếu
+        const samplePoints = [];
+        const margin = Math.max(2, Math.round(3 * dpr));
+
+        const numStepsX = Math.min(16, Math.max(6, Math.round(cW / 14)));
+        for (let i = 0; i <= numStepsX; i++) {
+            const x = Math.round(cX + (cW * i) / numStepsX);
+            samplePoints.push({ x, y: cY - margin });
+            samplePoints.push({ x, y: cY + cH + margin });
+        }
+
+        const numStepsY = Math.min(10, Math.max(4, Math.round(cH / 12)));
+        for (let j = 0; j <= numStepsY; j++) {
+            const y = Math.round(cY + (cH * j) / numStepsY);
+            samplePoints.push({ x: cX - margin, y });
+            samplePoints.push({ x: cX + cW + margin, y });
+        }
+
+        // 4 góc
+        samplePoints.push({ x: cX - margin, y: cY - margin });
+        samplePoints.push({ x: cX + cW + margin, y: cY - margin });
+        samplePoints.push({ x: cX - margin, y: cY + cH + margin });
+        samplePoints.push({ x: cX + cW + margin, y: cY + cH + margin });
+
+        const bgColors = [];
+        for (const pt of samplePoints) {
+            const px = Math.max(0, Math.min(canvas.width - 1, pt.x));
+            const py = Math.max(0, Math.min(canvas.height - 1, pt.y));
+            try {
+                const pixel = ctx.getImageData(px, py, 1, 1).data;
+                if (pixel[3] > 40) {
+                    bgColors.push([pixel[0], pixel[1], pixel[2]]);
+                }
+            } catch (e) {}
+        }
+
+        if (bgColors.length === 0) return fallback;
+
+        // Gom cụm màu nền để tìm màu áp đảo (Dominant background color)
+        const clusters = [];
+        for (const c of bgColors) {
+            let matched = false;
+            for (const cl of clusters) {
+                if (Math.hypot(c[0] - cl.r, c[1] - cl.g, c[2] - cl.b) <= 22) {
+                    cl.count++;
+                    cl.sumR += c[0];
+                    cl.sumG += c[1];
+                    cl.sumB += c[2];
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                clusters.push({ r: c[0], g: c[1], b: c[2], count: 1, sumR: c[0], sumG: c[1], sumB: c[2] });
+            }
+        }
+
+        clusters.sort((a, b) => b.count - a.count);
+        const dominant = clusters[0];
+        const domR = Math.round(dominant.sumR / dominant.count);
+        const domG = Math.round(dominant.sumG / dominant.count);
+        const domB = Math.round(dominant.sumB / dominant.count);
+
+        const hexBg = `#${domR.toString(16).padStart(2, '0')}${domG.toString(16).padStart(2, '0')}${domB.toString(16).padStart(2, '0')}`.toUpperCase();
+        const bgLuminance = (0.299 * domR + 0.587 * domG + 0.114 * domB);
+
+        // Lấy mẫu nét chữ (Ink sampling) bên trong khung
+        const inkColors = [];
+        const stepInsideX = Math.max(4, Math.round(cW / 24));
+        const stepInsideY = Math.max(3, Math.round(cH / 14));
+        for (let ix = cX + 2; ix < cX + cW - 2; ix += stepInsideX) {
+            for (let iy = cY + 2; iy < cY + cH - 2; iy += stepInsideY) {
+                const px = Math.max(0, Math.min(canvas.width - 1, ix));
+                const py = Math.max(0, Math.min(canvas.height - 1, iy));
+                try {
+                    const pixel = ctx.getImageData(px, py, 1, 1).data;
+                    if (pixel[3] > 40) {
+                        const distToBg = Math.hypot(pixel[0] - domR, pixel[1] - domG, pixel[2] - domB);
+                        if (distToBg >= 50) {
+                            inkColors.push([pixel[0], pixel[1], pixel[2]]);
+                        }
+                    }
+                } catch (e) {}
+            }
+        }
+
+        let hexText = bgLuminance > 128 ? '#0F172A' : '#FFFFFF';
+        if (inkColors.length >= 2) {
+            const inkClusters = [];
+            for (const c of inkColors) {
+                let m = false;
+                for (const ic of inkClusters) {
+                    if (Math.hypot(c[0] - ic.r, c[1] - ic.g, c[2] - ic.b) <= 25) {
+                        ic.count++;
+                        ic.sumR += c[0];
+                        ic.sumG += c[1];
+                        ic.sumB += c[2];
+                        m = true;
+                        break;
+                    }
+                }
+                if (!m) inkClusters.push({ r: c[0], g: c[1], b: c[2], count: 1, sumR: c[0], sumG: c[1], sumB: c[2] });
+            }
+            inkClusters.sort((a, b) => b.count - a.count);
+            const domInk = inkClusters[0];
+            const inkR = Math.round(domInk.sumR / domInk.count);
+            const inkG = Math.round(domInk.sumG / domInk.count);
+            const inkB = Math.round(domInk.sumB / domInk.count);
+            hexText = `#${inkR.toString(16).padStart(2, '0')}${inkG.toString(16).padStart(2, '0')}${inkB.toString(16).padStart(2, '0')}`.toUpperCase();
+        }
+
+        return {
+            bgColor: hexBg,
+            textColor: hexText,
+            isUniform: (dominant.count / bgColors.length) >= 0.65
+        };
+    } catch (err) {
+        console.warn('Lỗi phân tích màu nền canvas:', err);
+        return fallback;
+    }
+}
+// Hàm khởi tạo hoặc lấy bản ghi chỉnh sửa text, bảo toàn 100% định dạng font (Bold, Italic, Family, Size, Color, BgColor, Align)
+function getOrCreateTextEdit(pageData, blockId, blockEl) {
+    if (!pageData) return null;
+    if (!pageData.textEdits) pageData.textEdits = {};
+    if (!pageData.textEdits[blockId]) {
+        const origItem = (pageData._cachedTextItems || []).find(it => it.id === blockId);
+        const zoom = editorZoom || 1.0;
+        const domText = blockEl ? blockEl.innerText : '';
+        pageData.textEdits[blockId] = {
+            id: blockId,
+            text: domText || (origItem ? origItem.str : ''),
+            left: origItem ? origItem.left : (blockEl ? Math.round(blockEl.offsetLeft / zoom) : 0),
+            top: origItem ? origItem.top : (blockEl ? Math.round(blockEl.offsetTop / zoom) : 0),
+            width: origItem ? origItem.width : (blockEl ? Math.round(blockEl.offsetWidth / zoom) : 100),
+            height: origItem ? origItem.height : (blockEl ? Math.round(blockEl.offsetHeight / zoom) : 24),
+            fontSize: origItem ? (origItem.fontSize || 14) : 14,
+            fontFamily: origItem ? (origItem.fontFamily || "'Times New Roman', Times, serif") : "'Times New Roman', Times, serif",
+            isBold: origItem ? !!origItem.isBold : false,
+            isItalic: origItem ? !!origItem.isItalic : false,
+            color: origItem ? (origItem.textColor || '#0F172A') : '#0F172A',
+            bgColor: origItem ? (origItem.bgColor || '#FFFFFF') : '#FFFFFF',
+            align: origItem ? (origItem.align || 'left') : 'left',
+            modified: true
+        };
+    }
+    return pageData.textEdits[blockId];
+}
+
+// Render lớp chỉnh sửa trực tiếp chữ gốc của PDF (Khớp 100% Ảnh 1 & Ảnh 2)
 async function renderPdfTextEditLayer(pageData) {
     const layer = document.getElementById('paperTextEditLayer');
     if (!layer) return;
@@ -1736,12 +3180,30 @@ async function renderPdfTextEditLayer(pageData) {
         if (currentPdfDoc) {
             try {
                 const targetPageNum = pageData.originalPageNum;
-                if (targetPageNum <= currentPdfDoc.numPages) {
-                    const page = await currentPdfDoc.getPage(targetPageNum);
+                const source = editorSourceForPage(pageData);
+                if (source && source.doc && targetPageNum <= source.doc.numPages) {
+                    const page = await source.doc.getPage(targetPageNum);
                     const effRot = (page.rotate + (pageData.rotation || 0)) % 360;
                     // Lấy viewport ở scale chuẩn 1.0 (PDF points) để lưu trữ tọa độ bất biến khi zoom
                     const viewport = page.getViewport({ scale: 1.0, rotation: effRot });
                     const textContent = await page.getTextContent();
+
+                    // Đọc từ điển font chi tiết từ page.commonObjs để lấy tên PostScript và cờ in đậm / in nghiêng chính xác
+                    const fontDetailsMap = {};
+                    if (page.commonObjs) {
+                        const fontIds = Object.keys(textContent.styles || {});
+                        await Promise.all(fontIds.map(fid => new Promise(res => {
+                            try {
+                                page.commonObjs.get(fid, f => {
+                                    if (f) fontDetailsMap[fid] = f;
+                                    res();
+                                });
+                                setTimeout(res, 60);
+                            } catch (e) {
+                                res();
+                            }
+                        })));
+                    }
 
                     const rawItems = [];
                     for (let idx = 0; idx < textContent.items.length; idx++) {
@@ -1752,20 +3214,22 @@ async function renderPdfTextEditLayer(pageData) {
                         const tr = pdfjsLib.Util.transform(viewport.transform, it.transform);
                         const fontSize = Math.max(9, Math.round(Math.hypot(tr[0], tr[1])));
                         const vx = Math.round(tr[4]);
-                        const vy = Math.round(tr[5]);
+                        const vy = Math.round(tr[5]); // Baseline Y trong hệ toạ độ transformed
 
                         const left = vx;
-                        const top = Math.max(0, Math.round(vy - fontSize * 0.95));
-                        const width = Math.max(8, Math.round(it.width));
-                        const height = Math.max(12, Math.round(fontSize * 1.25));
+                        const baselineY = vy;
+                        const top = Math.max(0, Math.round(vy - fontSize * 0.88));
+                        const width = Math.max(4, Math.round(it.width));
+                        const height = Math.max(10, Math.round(fontSize * 1.2));
 
-                        const fontInfo = mapPdfFontToCss(it.fontName, textContent.styles);
+                        const fontInfo = mapPdfFontToCss(it.fontName, textContent.styles, fontDetailsMap[it.fontName]);
 
                         rawItems.push({
                             id: `p${pageData.pageNumber}_t${idx}`,
                             str: str,
                             left,
                             top,
+                            baselineY,
                             width,
                             height,
                             fontSize,
@@ -1775,85 +3239,140 @@ async function renderPdfTextEditLayer(pageData) {
                         });
                     }
 
-                    // Sắp xếp các phần tử theo thứ tự đọc tự nhiên từ trên xuống dưới, từ trái sang phải
+                    // Sắp xếp các phần tử: gom theo đường baseline Y trước (dung sai 3px), sau đó theo thứ tự trái sang phải
                     rawItems.sort((a, b) => {
-                        if (Math.abs(a.top - b.top) > 4) {
-                            return a.top - b.top;
+                        if (Math.abs(a.baselineY - b.baselineY) > 3) {
+                            return a.baselineY - b.baselineY;
                         }
                         return a.left - b.left;
                     });
 
-                    // Bước 1: Nhóm các từ nằm trên cùng một dòng trong cùng một cột (không gộp các cột cách xa nhau)
+                    // Bước 1: Nhóm các từ trên cùng dòng (Baseline grouping), xử lý hoàn hảo chữ căn đều 2 bên (Justified)
                     const lines = [];
                     let curLine = null;
 
                     for (let i = 0; i < rawItems.length; i++) {
                         const cur = rawItems[i];
                         if (!curLine) {
-                            curLine = { ...cur };
+                            curLine = { ...cur, boldChars: cur.isBold ? cur.str.length : 0, italicChars: cur.isItalic ? cur.str.length : 0, totalChars: cur.str.length };
                             continue;
                         }
 
-                        const isSameLine = Math.abs(cur.top - curLine.top) <= Math.max(4, cur.fontSize * 0.35);
+                        const isSameBaseline = Math.abs(cur.baselineY - curLine.baselineY) <= Math.max(3, curLine.fontSize * 0.28);
                         const prevRight = curLine.left + curLine.width;
-                        const isAdjacent = (cur.left >= curLine.left) &&
-                                           (cur.left <= prevRight + Math.max(16, cur.fontSize * 1.5)) &&
-                                           (cur.left >= prevRight - 6);
+                        const gap = cur.left - prevRight;
 
-                        if (isSameLine && isAdjacent) {
-                            const gap = cur.left - prevRight;
-                            // Ngưỡng khoảng cách thực tế giữa 2 từ trong typography PDF: ~0.28 kích cỡ font
-                            // Chỉ chèn dấu cách nếu không phải là ký tự đơn lẻ hoặc ký tự dấu tiếng Việt
+                        // Trong văn bản căn lề hai bên (Justified text), khoảng cách từ có thể lên tới 3.5 font size
+                        const isSameFlow = isSameBaseline && (gap <= Math.max(30, curLine.fontSize * 3.5)) && (cur.left >= prevRight - 12);
+
+                        if (isSameFlow) {
                             const isSingleChar = cur.str.length <= 1 || curLine.str.length <= 1;
-                            const isSpaceGap = !isSingleChar && (gap >= Math.max(2.4, cur.fontSize * 0.28));
+                            const isSpaceGap = !isSingleChar && (gap >= Math.max(2.2, cur.fontSize * 0.22));
                             const alreadyHasSpace = curLine.str.endsWith(' ') || cur.str.startsWith(' ');
                             const needsSpace = isSpaceGap && !alreadyHasSpace;
 
                             curLine.str += (needsSpace ? ' ' : '') + cur.str;
-                            curLine.width = Math.round((cur.left + cur.width) - curLine.left);
+                            curLine.width = Math.round(Math.max(curLine.width, (cur.left + cur.width) - curLine.left));
                             curLine.height = Math.max(curLine.height, cur.height);
-                            curLine.isBold = curLine.isBold || cur.isBold;
-                            curLine.isItalic = curLine.isItalic || cur.isItalic;
+                            curLine.top = Math.min(curLine.top, cur.top);
+                            curLine.boldChars = (curLine.boldChars || (curLine.isBold ? curLine.str.length : 0)) + (cur.isBold ? cur.str.length : 0);
+                            curLine.italicChars = (curLine.italicChars || (curLine.isItalic ? curLine.str.length : 0)) + (cur.isItalic ? cur.str.length : 0);
+                            curLine.totalChars = (curLine.totalChars || curLine.str.length) + cur.str.length;
+                            curLine.isBold = (curLine.boldChars / curLine.totalChars) >= 0.45;
+                            curLine.isItalic = (curLine.italicChars / curLine.totalChars) >= 0.45;
                         } else {
                             lines.push(curLine);
-                            curLine = { ...cur };
+                            curLine = { ...cur, boldChars: cur.isBold ? cur.str.length : 0, italicChars: cur.isItalic ? cur.str.length : 0, totalChars: cur.str.length };
                         }
                     }
                     if (curLine) lines.push(curLine);
 
-                    // Bước 2: Nhóm các dòng liền kề cùng thuộc một đoạn văn bản (paragraph)
+                    // Bước 2: Nhóm các dòng thuộc cùng đoạn văn (Paragraph clustering) chuẩn 100% PDFaid & Word
+                    // Hỗ trợ bố cục nhiều cột (Multi-column) và các cột ghi chú/metadata bên cạnh không bị đứt đoạn
                     const paragraphs = [];
-                    let curPara = null;
+                    const usedLineIndices = new Set();
 
                     for (let i = 0; i < lines.length; i++) {
-                        const cur = lines[i];
-                        if (!curPara) {
-                            curPara = { ...cur };
-                            continue;
+                        if (usedLineIndices.has(i)) continue;
+                        usedLineIndices.add(i);
+
+                        const curPara = {
+                            ...lines[i],
+                            lastBaselineY: lines[i].baselineY,
+                            linesCount: 1,
+                            boldLines: lines[i].isBold ? 1 : 0,
+                            italicLines: lines[i].isItalic ? 1 : 0
+                        };
+
+                        // Liên tục tìm dòng kế tiếp nằm ngay bên dưới cùng cột để ghép thành đoạn văn trọn vẹn
+                        let foundNext = true;
+                        while (foundNext) {
+                            foundNext = false;
+                            let bestIdx = -1;
+                            let bestGap = Infinity;
+
+                            for (let j = 0; j < lines.length; j++) {
+                                if (usedLineIndices.has(j)) continue;
+                                const cand = lines[j];
+
+                                const baselineGap = cand.baselineY - curPara.lastBaselineY;
+                                // Dòng kế tiếp phải nằm bên dưới trong khoảng cách 0.7x đến 2.3x fontSize
+                                if (baselineGap >= curPara.fontSize * 0.7 && baselineGap <= curPara.fontSize * 2.3) {
+                                    // Kiểm tra cỡ chữ tương đồng (dung sai 2.8pt do subsetting)
+                                    const isFontMatch = Math.abs(cand.fontSize - curPara.fontSize) <= 2.8;
+                                    if (!isFontMatch) continue;
+
+                                    const paraRight = curPara.left + curPara.width;
+                                    const candRight = cand.left + cand.width;
+                                    const isHorizOverlap = (cand.left < paraRight + 25) && (candRight > curPara.left - 25);
+                                    const isIndentMatch = Math.abs(cand.left - curPara.left) <= Math.max(45, curPara.fontSize * 3.5);
+
+                                    if (isHorizOverlap || isIndentMatch) {
+                                        if (baselineGap < bestGap) {
+                                            bestGap = baselineGap;
+                                            bestIdx = j;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (bestIdx !== -1) {
+                                const nextLine = lines[bestIdx];
+                                usedLineIndices.add(bestIdx);
+                                curPara.str += '\n' + nextLine.str;
+                                const newLeft = Math.min(curPara.left, nextLine.left);
+                                const newRight = Math.max(curPara.left + curPara.width, nextLine.left + nextLine.width);
+                                curPara.left = newLeft;
+                                curPara.width = Math.round(newRight - newLeft);
+                                curPara.top = Math.min(curPara.top, nextLine.top);
+                                const newBottom = Math.max(curPara.top + curPara.height, nextLine.top + nextLine.height);
+                                curPara.height = Math.round(newBottom - curPara.top);
+                                curPara.lastBaselineY = nextLine.baselineY;
+                                curPara.boldLines += nextLine.isBold ? 1 : 0;
+                                curPara.italicLines += nextLine.isItalic ? 1 : 0;
+                                curPara.linesCount++;
+                                foundNext = true;
+                            }
                         }
 
-                        const paraBottom = curPara.top + curPara.height;
-                        const isNextLine = (cur.top >= curPara.top + curPara.fontSize * 0.8) &&
-                                           (cur.top <= paraBottom + curPara.fontSize * 0.85);
-                        const isAlignedLeft = Math.abs(cur.left - curPara.left) <= 12;
-                        const isSameFont = (cur.fontFamily === curPara.fontFamily) &&
-                                           (Math.abs(cur.fontSize - curPara.fontSize) <= 1.5) &&
-                                           (cur.isBold === curPara.isBold);
-
-                        if (isNextLine && isAlignedLeft && isSameFont) {
-                            curPara.str += '\n' + cur.str;
-                            curPara.width = Math.max(curPara.width, cur.width);
-                            curPara.height = Math.round((cur.top + cur.height) - curPara.top);
-                        } else {
-                            paragraphs.push(curPara);
-                            curPara = { ...cur };
+                        if (curPara.linesCount > 1) {
+                            curPara.isBold = (curPara.boldLines / curPara.linesCount) >= 0.5;
+                            curPara.isItalic = (curPara.italicLines / curPara.linesCount) >= 0.5;
                         }
+
+                        paragraphs.push(curPara);
                     }
-                    if (curPara) paragraphs.push(curPara);
 
-                    // Hậu xử lý phục hồi ngữ nghĩa toàn diện cho tất cả các đoạn văn bản
+                    // Hậu xử lý phục hồi ngữ nghĩa toàn diện
                     paragraphs.forEach(p => {
                         p.str = postProcessMergedText(p.str);
+                    });
+
+                    // Tự động phân tích màu nền và màu chữ từ Canvas cho từng đoạn văn
+                    paragraphs.forEach(p => {
+                        const sample = sampleBlockBgAndTextColor(canvas, p, 1.0);
+                        p.bgColor = sample.bgColor;
+                        p.textColor = sample.textColor;
                     });
 
                     pageData._cachedTextItems = paragraphs;
@@ -1867,13 +3386,13 @@ async function renderPdfTextEditLayer(pageData) {
         } else {
             // Mockup text blocks chuẩn khớp 100% Ảnh 1 CHỈ KHI không có tệp PDF nào được mở
             pageData._cachedTextItems = [
-                { id: `p${pageData.pageNumber}_t0`, str: 'Đặc san Nghiên cứu Chính sách và Phát triển', left: 45, top: 48, width: 290, height: 22, fontSize: 13, fontFamily: "'Times New Roman', Times, serif", isBold: true },
-                { id: `p${pageData.pageNumber}_t1`, str: 'Số 02/2022', left: 510, top: 48, width: 85, height: 22, fontSize: 13, fontFamily: "'Times New Roman', Times, serif" },
-                { id: `p${pageData.pageNumber}_t2`, str: 'Hạnh Đào và cộng sự (2022). Những yếu tố ảnh hưởng đến lựa chọn ngành nghề của sinh viên chuyên ngành tài chính - ngân hàng học viện chính sách và phát triển. Đặc san Nghiên cứu Chính sách và Phát triển, 2(2022), 127-137', left: 45, top: 82, width: 350, height: 62, fontSize: 10, fontFamily: "'Times New Roman', Times, serif" },
-                { id: `p${pageData.pageNumber}_t3`, str: 'Những yếu tố ảnh hưởng đến lựa chọn ngành nghề của sinh viên chuyên ngành tài chính - ngân hàng học viện chính sách phát triển', left: 45, top: 160, width: 360, height: 68, fontSize: 16, fontFamily: "'Times New Roman', Times, serif", isBold: true },
-                { id: `p${pageData.pageNumber}_t4`, str: 'Đào Thị Bích Hạnh (TS)\nHọc viện Chính sách và Phát triển\nEmail: bichhanh@mpi.gov.vn', left: 55, top: 242, width: 230, height: 42, fontSize: 11, fontFamily: "'Times New Roman', Times, serif" },
-                { id: `p${pageData.pageNumber}_t5`, str: 'Cao Ánh Tuyết, Nguyễn Huyền My, Trần Quỳnh Liên, Vũ Thị Ngân, Ngô Việt Anh', left: 55, top: 298, width: 280, height: 32, fontSize: 11, fontFamily: "'Times New Roman', Times, serif" },
-                { id: `p${pageData.pageNumber}_t6`, str: 'Tóm tắt: Bài nghiên cứu xác định những yếu tố ảnh hưởng đến việc lựa chọn ngành nghề của sinh viên chuyên ngành Tài chính - Ngân hàng tại Học viện Chính sách và Phát triển. Thông qua kết quả khảo sát thực tế và đánh giá mức độ ảnh hưởng của các nhân tố, bài viết đề xuất những giải pháp nhằm giúp cho sinh viên có những lựa chọn đúng về chuyên ngành mình học, phù hợp với những yêu cầu đặt ra của nền kinh tế và thị trường lao động đồng thời có các kiến nghị với Khoa Tài chính - Đầu tư', left: 45, top: 348, width: 380, height: 135, fontSize: 11, fontFamily: "'Times New Roman', Times, serif" }
+                { id: `p${pageData.pageNumber}_t0`, str: 'Đặc san Nghiên cứu Chính sách và Phát triển', left: 45, top: 48, width: 290, height: 22, fontSize: 13, fontFamily: "'Times New Roman', Times, serif", isBold: true, bgColor: '#FFFFFF', textColor: '#0F172A' },
+                { id: `p${pageData.pageNumber}_t1`, str: 'Số 02/2022', left: 510, top: 48, width: 85, height: 22, fontSize: 13, fontFamily: "'Times New Roman', Times, serif", bgColor: '#FFFFFF', textColor: '#0F172A' },
+                { id: `p${pageData.pageNumber}_t2`, str: 'Hạnh Đào và cộng sự (2022). Những yếu tố ảnh hưởng đến lựa chọn ngành nghề của sinh viên chuyên ngành tài chính - ngân hàng học viện chính sách và phát triển. Đặc san Nghiên cứu Chính sách và Phát triển, 2(2022), 127-137', left: 45, top: 82, width: 350, height: 62, fontSize: 10, fontFamily: "'Times New Roman', Times, serif", bgColor: '#FFFFFF', textColor: '#0F172A' },
+                { id: `p${pageData.pageNumber}_t3`, str: 'Những yếu tố ảnh hưởng đến lựa chọn ngành nghề của sinh viên chuyên ngành tài chính - ngân hàng học viện chính sách phát triển', left: 45, top: 160, width: 360, height: 68, fontSize: 16, fontFamily: "Cambria, 'Times New Roman', serif", isBold: true, bgColor: '#FFFFFF', textColor: '#1D4ED8' },
+                { id: `p${pageData.pageNumber}_t4`, str: 'Đào Thị Bích Hạnh (TS)\nHọc viện Chính sách và Phát triển\nEmail: bichhanh@mpi.gov.vn', left: 55, top: 242, width: 230, height: 42, fontSize: 11, fontFamily: "Cambria, 'Times New Roman', serif", isBold: true, bgColor: '#FFFFFF', textColor: '#0F172A' },
+                { id: `p${pageData.pageNumber}_t5`, str: 'Cao Ánh Tuyết, Nguyễn Huyền My, Trần Quỳnh Liên, Vũ Thị Ngân, Ngô Việt Anh', left: 55, top: 298, width: 280, height: 32, fontSize: 11, fontFamily: "Cambria, 'Times New Roman', serif", isBold: true, bgColor: '#FFFFFF', textColor: '#0F172A' },
+                { id: `p${pageData.pageNumber}_t6`, str: 'Tóm tắt: Bài nghiên cứu xác định những yếu tố ảnh hưởng đến việc lựa chọn ngành nghề của sinh viên chuyên ngành Tài chính - Ngân hàng tại Học viện Chính sách và Phát triển. Thông qua kết quả khảo sát thực tế và đánh giá mức độ ảnh hưởng của các nhân tố, bài viết đề xuất những giải pháp nhằm giúp cho sinh viên có những lựa chọn đúng về chuyên ngành mình học, phù hợp với những yêu cầu đặt ra của nền kinh tế và thị trường lao động đồng thời có các kiến nghị với Khoa Tài chính - Đầu tư', left: 45, top: 348, width: 380, height: 135, fontSize: 12, fontFamily: "Cambria, 'Times New Roman', serif", bgColor: '#FFFFFF', textColor: '#0F172A' }
             ];
         }
     }
@@ -1893,7 +3412,8 @@ async function renderPdfTextEditLayer(pageData) {
         const effectiveSize = (editData && editData.fontSize) || item.fontSize || 14;
         const effectiveBold = (editData && editData.isBold !== undefined) ? editData.isBold : item.isBold;
         const effectiveItalic = (editData && editData.isItalic !== undefined) ? editData.isItalic : item.isItalic;
-        const effectiveColor = (editData && editData.color) || '#0F172A';
+        const activeBg = (editData && editData.bgColor) ? editData.bgColor : (item.bgColor || '#FFFFFF');
+        const activeColor = (editData && editData.color) ? editData.color : (item.textColor || '#0F172A');
         const effectiveAlign = (editData && editData.align) || 'left';
 
         const block = document.createElement('div');
@@ -1902,57 +3422,90 @@ async function renderPdfTextEditLayer(pageData) {
         block.dataset.textId = item.id;
         block.style.left = `${Math.round(item.left * zoom)}px`;
         block.style.top = `${Math.round(item.top * zoom)}px`;
-        block.style.minWidth = `${Math.round(item.width * zoom)}px`;
+        block.style.width = `${Math.round(item.width * zoom)}px`;
         block.style.minHeight = `${Math.round(item.height * zoom)}px`;
         block.style.fontSize = `${Math.round(effectiveSize * zoom)}px`;
         block.style.fontFamily = effectiveFont;
         block.style.fontWeight = effectiveBold ? 'bold' : 'normal';
         block.style.fontStyle = effectiveItalic ? 'italic' : 'normal';
+        block.style.lineHeight = '1.35';
         block.style.textAlign = effectiveAlign;
-        // Khi chưa bấm vào: chữ trong suốt để hiển thị chữ gốc sắc nét 100% của PDF (Khớp Ảnh 1)
-        block.style.color = isEdited ? effectiveColor : 'transparent';
+
+        // Thiết lập biến CSS màu nền và màu chữ chính xác
+        block.style.setProperty('--block-bg', activeBg);
+        block.style.setProperty('--block-color', activeColor);
+
+        if (isEdited) {
+            block.style.backgroundColor = activeBg === 'transparent' ? 'transparent' : activeBg;
+            block.style.color = activeColor;
+        } else {
+            block.style.backgroundColor = 'transparent';
+            block.style.color = 'transparent';
+        }
+
         block.innerText = currentText;
-        block.title = 'Bấm để chỉnh sửa văn bản này trực tiếp trên trang';
+        block.title = 'Bấm để chỉnh sửa văn bản này trực tiếp như Microsoft Word';
+
+        // 4 Chấm tròn tay cầm điều chỉnh ở 4 góc chuẩn khớp PDFaid Ảnh 2
+        const handleNw = document.createElement('div');
+        handleNw.className = 'block-corner-handle handle-nw';
+        const handleNe = document.createElement('div');
+        handleNe.className = 'block-corner-handle handle-ne';
+        const handleSe = document.createElement('div');
+        handleSe.className = 'block-corner-handle handle-se';
+        const handleSw = document.createElement('div');
+        handleSw.className = 'block-corner-handle handle-sw';
+        block.appendChild(handleNw);
+        block.appendChild(handleNe);
+        block.appendChild(handleSe);
+        block.appendChild(handleSw);
 
         if (editorActiveTool === 'edit-text') {
             block.onfocus = () => {
+                pushEditorHistory();
                 block.classList.add('is-editing');
-                block.style.color = (pageData.textEdits[item.id]?.color) || effectiveColor || '#0F172A';
+                const curEdit = getOrCreateTextEdit(pageData, item.id, block);
+                const currentBg = curEdit.bgColor || item.bgColor || '#FFFFFF';
+                const currentColor = curEdit.color || item.textColor || '#0F172A';
+                block.style.setProperty('--block-bg', currentBg === 'transparent' ? 'transparent' : currentBg);
+                block.style.setProperty('--block-color', currentColor);
+                block.style.backgroundColor = currentBg === 'transparent' ? 'transparent' : currentBg;
+                block.style.color = currentColor;
                 editorSelectedElementId = item.id;
-                syncTextPropertiesToRibbon(editData || item);
+                syncTextPropertiesToRibbon(curEdit);
             };
 
             block.oninput = () => {
                 block.classList.add('is-edited');
-                block.style.color = (pageData.textEdits[item.id]?.color) || effectiveColor || '#0F172A';
-                pageData.textEdits[item.id] = {
-                    id: item.id,
-                    text: block.innerText,
-                    left: item.left,
-                    top: item.top,
-                    width: item.width,
-                    height: item.height,
-                    fontSize: effectiveSize,
-                    fontFamily: effectiveFont,
-                    isBold: effectiveBold,
-                    isItalic: effectiveItalic,
-                    color: effectiveColor,
-                    align: effectiveAlign,
-                    modified: true
-                };
+                const curEdit = getOrCreateTextEdit(pageData, item.id, block);
+                const currentBg = curEdit.bgColor || item.bgColor || '#FFFFFF';
+                const currentColor = curEdit.color || item.textColor || '#0F172A';
+                block.style.setProperty('--block-bg', currentBg === 'transparent' ? 'transparent' : currentBg);
+                block.style.setProperty('--block-color', currentColor);
+                block.style.backgroundColor = currentBg === 'transparent' ? 'transparent' : currentBg;
+                block.style.color = currentColor;
+                curEdit.text = block.innerText;
+                curEdit.height = Math.max(item.height, Math.round(block.offsetHeight / zoom));
+                curEdit.modified = true;
                 saveEditorDraft();
             };
 
             block.onblur = () => {
                 block.classList.remove('is-editing');
                 const curEdit = pageData.textEdits[item.id];
-                if (block.innerText === item.str && (!curEdit || !curEdit.modifiedFormat)) {
+                if (curEdit && block.innerText === item.str && !curEdit.modifiedFormat) {
                     delete pageData.textEdits[item.id];
                     block.classList.remove('is-edited');
+                    block.style.backgroundColor = 'transparent';
                     block.style.color = 'transparent';
-                } else {
+                } else if (curEdit) {
                     block.classList.add('is-edited');
-                    block.style.color = curEdit?.color || '#0F172A';
+                    const finalBg = curEdit.bgColor || item.bgColor || '#FFFFFF';
+                    const finalColor = curEdit.color || item.textColor || '#0F172A';
+                    block.style.setProperty('--block-bg', finalBg === 'transparent' ? 'transparent' : finalBg);
+                    block.style.setProperty('--block-color', finalColor);
+                    block.style.backgroundColor = finalBg === 'transparent' ? 'transparent' : finalBg;
+                    block.style.color = finalColor;
                 }
                 saveEditorDraft();
             };
@@ -1971,11 +3524,16 @@ function renderCanvasAnnotations(pageData) {
     if (!annotLayer) return;
 
     annotLayer.innerHTML = '';
+    const escapeEditorValue = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 
     (pageData.elements || []).forEach(el => {
         let domEl;
 
         if (el.type === 'text') {
+            // Không bao giờ hiển thị placeholder chữ mẫu 'Gõ nội dung tại đây...' nếu chưa được người dùng gõ nội dung thực tế
+            if (!el.text || el.text.trim() === 'Gõ nội dung tại đây...') {
+                if (!el.isEditing) return;
+            }
             domEl = document.createElement('div');
             domEl.className = 'canvas-annotation-text' + (el.id === editorSelectedElementId ? ' selected-element' : '');
             domEl.dataset.elementId = el.id;
@@ -1987,6 +3545,7 @@ function renderCanvasAnnotations(pageData) {
             domEl.style.opacity = el.opacity !== undefined ? el.opacity : 1.0;
             domEl.style.color = el.color || '#000000';
             domEl.style.fontWeight = el.bold ? '700' : '500';
+            domEl.style.fontStyle = el.italic ? 'italic' : 'normal';
             domEl.innerText = el.text;
             domEl.title = 'Bấm để chỉnh sửa chữ trực tiếp trên trang • Kéo để di chuyển';
 
@@ -2049,7 +3608,7 @@ function renderCanvasAnnotations(pageData) {
             if (el.sigType === 'draw' || el.sigType === 'upload') {
                 domEl.innerHTML = `<img src="${el.data}" style="width: 100%; height: auto; display: block; pointer-events: none;">`;
             } else {
-                domEl.innerHTML = `<div style="font-family: ${el.fontFamily || 'Dancing Script, cursive'}; font-size: ${el.size || 34}px; color: ${el.color || '#000000'}; font-weight: 700; user-select: none;">${el.name}</div>`;
+                domEl.innerHTML = `<div style="font-family: ${el.fontFamily || 'Dancing Script, cursive'}; font-size: ${el.size || 34}px; color: ${el.color || '#000000'}; font-weight: 700; user-select: none;">${escapeEditorValue(el.name)}</div>`;
             }
 
             // Handles cho chữ ký
@@ -2071,7 +3630,7 @@ function renderCanvasAnnotations(pageData) {
             domEl.style.top = `${el.y}px`;
             domEl.style.opacity = el.opacity !== undefined ? el.opacity : 1.0;
             domEl.innerHTML = getShapeHtml(el.shapeType, el.color, el.size, el.fill, el.dashStyle, el.arrowHead, el.width, el.height);
-            
+
             // Núm kéo co giãn hình học góc dưới-phải (SE Handle)
             const seHandle = document.createElement('div');
             seHandle.className = 'img-resize-handle handle-se';
@@ -2130,14 +3689,14 @@ function renderCanvasAnnotations(pageData) {
 
             const isSelected = (el.id === editorSelectedElementId || el.isEditing);
             domEl.innerHTML = `
-                <a href="${el.url}" target="_blank" class="canvas-link-badge" onclick="if(event.ctrlKey) return true; event.preventDefault();">
+                <a href="${escapeEditorValue(/^(https?:|mailto:)/i.test(el.url || '') ? el.url : '#')}" target="_blank" rel="noopener noreferrer" class="canvas-link-badge" onclick="if(event.ctrlKey) return true; event.preventDefault();">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px; height:14px;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                    <span>${el.text || el.url}</span>
+                    <span>${escapeEditorValue(el.text || el.url)}</span>
                 </a>
                 ${isSelected ? `
                 <div class="inline-link-popover" onclick="event.stopPropagation();">
-                    <input type="text" class="inline-link-input" style="width: 160px;" value="${el.url}" placeholder="https://..." oninput="updateLinkAnnotation('${el.id}', 'url', this.value)">
-                    <input type="text" class="inline-link-input" style="width: 110px;" value="${el.text}" placeholder="Nhãn liên kết..." oninput="updateLinkAnnotation('${el.id}', 'text', this.value)">
+                    <input type="text" class="inline-link-input" style="width: 160px;" value="${escapeEditorValue(el.url)}" placeholder="https://..." oninput="updateLinkAnnotation('${el.id}', 'url', this.value)">
+                    <input type="text" class="inline-link-input" style="width: 110px;" value="${escapeEditorValue(el.text)}" placeholder="Nhãn liên kết..." oninput="updateLinkAnnotation('${el.id}', 'text', this.value)">
                     <button type="button" class="img-bar-btn" onclick="closeLinkEdit('${el.id}')" title="Xong">✓</button>
                     <button type="button" class="img-bar-btn text-danger" onclick="deleteSelectedEditorElement()" title="Xóa">✕</button>
                 </div>` : ''}
@@ -2165,7 +3724,7 @@ function renderCanvasAnnotations(pageData) {
                         <span>📌 Ghi chú (${el.time || 'Hôm nay'})</span>
                         <button type="button" class="img-bar-btn" style="width: 20px; height: 20px;" onclick="toggleNoteCard('${el.id}', event)">✕</button>
                     </div>
-                    <textarea class="inline-note-textarea" placeholder="Nhập ghi chú trực tiếp tại đây..." oninput="updateNoteAnnotation('${el.id}', this.value)">${el.text || ''}</textarea>
+                    <textarea class="inline-note-textarea" placeholder="Nhập ghi chú trực tiếp tại đây..." oninput="updateNoteAnnotation('${el.id}', this.value)">${escapeEditorValue(el.text || '')}</textarea>
                 </div>` : ''}
             `;
             domEl.onclick = (e) => {
@@ -2198,8 +3757,15 @@ function renderCanvasAnnotations(pageData) {
 // Chỉnh sửa văn bản trực tiếp trên trang PDF (ContentEditable - Không popup)
 function startInlineTextEdit(domEl, el) {
     if (!domEl) return;
+    pushEditorHistory();
     domEl.contentEditable = "true";
     domEl.classList.add('inline-editing');
+
+    // Nếu vẫn là placeholder mặc định, xóa trắng để gõ ngay không bị dính chữ mẫu
+    if (domEl.innerText.trim() === 'Gõ nội dung tại đây...') {
+        domEl.innerText = '';
+    }
+
     domEl.focus();
 
     try {
@@ -2208,7 +3774,7 @@ function startInlineTextEdit(domEl, el) {
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
-    } catch (e) {}
+    } catch (e) { }
 
     domEl.oninput = () => {
         el.text = domEl.innerText;
@@ -2226,13 +3792,12 @@ function startInlineTextEdit(domEl, el) {
         domEl.classList.remove('inline-editing');
         const clean = domEl.innerText.trim();
         const pageData = editorPages.find(p => p.pageNumber === editorCurrentPage);
-        if (!clean && pageData) {
+        if ((!clean || clean === 'Gõ nội dung tại đây...') && pageData) {
             pageData.elements = pageData.elements.filter(item => item.id !== el.id);
             renderEditorCanvas();
         } else {
             el.text = clean;
             el.isEditing = false;
-            pushEditorHistory();
             saveEditorDraft();
         }
     };
@@ -2269,6 +3834,7 @@ function startElementResize(id, corner, event) {
     const pageData = editorPages.find(p => p.pageNumber === editorCurrentPage);
     const el = pageData && pageData.elements ? pageData.elements.find(e => e.id === id) : null;
     if (!el) return;
+    pushEditorHistory();
 
     const startX = event.clientX;
     const startY = event.clientY;
@@ -2304,7 +3870,7 @@ function startElementResize(id, corner, event) {
     function onMouseUp() {
         window.removeEventListener('mousemove', onMouseMove);
         window.removeEventListener('mouseup', onMouseUp);
-        pushEditorHistory();
+        saveEditorDraft();
         renderEditorCanvas();
     }
 
@@ -2322,6 +3888,7 @@ function startElementFreeRotate(id, event) {
 
     const dom = document.querySelector(`[data-element-id="${id}"]`);
     if (!dom) return;
+    pushEditorHistory();
     const rect = dom.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
@@ -2337,7 +3904,7 @@ function startElementFreeRotate(id, event) {
     function onMouseUp() {
         window.removeEventListener('mousemove', onMouseMove);
         window.removeEventListener('mouseup', onMouseUp);
-        pushEditorHistory();
+        saveEditorDraft();
         renderEditorCanvas();
     }
 
@@ -2477,7 +4044,7 @@ function getShapeHtml(shapeType, color = '#2563EB', strokeWidth = 2, fill = 'non
         const cy = Math.round(h / 2);
         return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${fillCol}" stroke="${stroke}" stroke-width="${strokeWidth}" ${dashAttr}/></svg>`;
     } else if (shapeType === 'polygon') {
-        return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polygon points="${w/2},4 ${w-6},${h*0.35} ${w*0.8},${h-6} ${w*0.2},${h-6} 6,${h*0.35}" fill="${fillCol}" stroke="${stroke}" stroke-width="${strokeWidth}" ${dashAttr}/></svg>`;
+        return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polygon points="${w / 2},4 ${w - 6},${h * 0.35} ${w * 0.8},${h - 6} ${w * 0.2},${h - 6} 6,${h * 0.35}" fill="${fillCol}" stroke="${stroke}" stroke-width="${strokeWidth}" ${dashAttr}/></svg>`;
     }
     return `<svg width="${w}" height="28"><line x1="4" y1="14" x2="${w - 4}" y2="14" stroke="${stroke}" stroke-width="${strokeWidth}"/></svg>`;
 }
@@ -2489,13 +4056,13 @@ function makeElementDraggable(domEl, dataEl) {
     let initialLeft = 0, initialTop = 0;
 
     domEl.addEventListener('mousedown', (e) => {
-        if (e.button !== 0 || 
-            e.target.classList.contains('canvas-del-btn') || 
-            domEl.isContentEditable || 
-            e.target.closest('.img-transform-bar') || 
-            e.target.closest('.img-resize-handle') || 
-            e.target.closest('.img-rot-handle') || 
-            e.target.closest('.inline-link-popover') || 
+        if (e.button !== 0 ||
+            e.target.classList.contains('canvas-del-btn') ||
+            domEl.isContentEditable ||
+            e.target.closest('.img-transform-bar') ||
+            e.target.closest('.img-resize-handle') ||
+            e.target.closest('.img-rot-handle') ||
+            e.target.closest('.inline-link-popover') ||
             e.target.closest('.inline-note-card')) {
             return;
         }
@@ -2506,6 +4073,7 @@ function makeElementDraggable(domEl, dataEl) {
         startY = e.clientY;
         initialLeft = parseInt(domEl.style.left || '0', 10);
         initialTop = parseInt(domEl.style.top || '0', 10);
+        pushEditorHistory();
         domEl.classList.add('selected');
 
         function onMouseMove(ev) {
@@ -2557,6 +4125,7 @@ function handleCanvasClickAction(x, y) {
     const pageData = editorPages.find(p => p.pageNumber === editorCurrentPage);
     if (!pageData) return;
     if (!pageData.elements) pageData.elements = [];
+    if (['add-text', 'shape', 'link', 'note'].includes(editorActiveTool)) pushEditorHistory();
 
     if (editorActiveTool === 'add-text') {
         const newId = 'txt-' + Date.now();
@@ -2819,24 +4388,67 @@ function setEditorColor(hex) {
             if (blockEl) {
                 pushEditorHistory();
                 blockEl.style.color = hex;
+                blockEl.style.setProperty('--block-color', hex);
                 blockEl.classList.add('is-edited');
-                if (!pageData.textEdits) pageData.textEdits = {};
-                if (!pageData.textEdits[editorSelectedElementId]) {
-                    const origItem = (pageData._cachedTextItems || []).find(it => it.id === editorSelectedElementId);
-                    pageData.textEdits[editorSelectedElementId] = {
-                        id: editorSelectedElementId,
-                        text: blockEl.innerText,
-                        left: origItem ? origItem.left : blockEl.offsetLeft,
-                        top: origItem ? origItem.top : blockEl.offsetTop,
-                        width: origItem ? origItem.width : blockEl.offsetWidth,
-                        height: origItem ? origItem.height : blockEl.offsetHeight,
-                        fontSize: origItem ? origItem.fontSize : 14,
-                        fontFamily: origItem ? origItem.fontFamily : 'Times New Roman'
-                    };
+                const edit = getOrCreateTextEdit(pageData, editorSelectedElementId, blockEl);
+                if (edit) {
+                    edit.color = hex;
+                    edit.modified = true;
+                    edit.modifiedFormat = true;
                 }
-                pageData.textEdits[editorSelectedElementId].color = hex;
-                pageData.textEdits[editorSelectedElementId].modified = true;
-                pageData.textEdits[editorSelectedElementId].modifiedFormat = true;
+                saveEditorDraft();
+            }
+        }
+    }
+}
+
+// Xử lý lựa chọn màu nền che cho khối văn bản
+function handleTextBgColorSelect(val) {
+    if (val === 'custom') {
+        const picker = document.getElementById('editorTextBgCustomColor');
+        if (picker) {
+            picker.style.display = 'inline-block';
+            picker.click();
+        }
+        return;
+    }
+    const picker = document.getElementById('editorTextBgCustomColor');
+    if (picker) picker.style.display = 'none';
+
+    if (val === 'auto') {
+        // Hút lại màu nền tự động từ Canvas trang hiện tại
+        if (editorSelectedElementId) {
+            const pageData = editorPages.find(p => p.pageNumber === editorCurrentPage);
+            const origItem = (pageData?._cachedTextItems || []).find(it => it.id === editorSelectedElementId);
+            const canvas = document.getElementById('pdfRenderCanvas');
+            if (origItem && canvas) {
+                const sample = sampleBlockBgAndTextColor(canvas, origItem, 1.0);
+                setEditorTextBgColor(sample.bgColor);
+            }
+        }
+        return;
+    }
+
+    setEditorTextBgColor(val);
+}
+
+// Thiết lập màu nền che chữ gốc trực tiếp cho khối văn bản đang chỉnh sửa
+function setEditorTextBgColor(color) {
+    if (editorSelectedElementId) {
+        const pageData = editorPages.find(p => p.pageNumber === editorCurrentPage);
+        if (pageData) {
+            const blockEl = document.querySelector(`.pdf-detected-text-block[data-text-id="${editorSelectedElementId}"]`);
+            if (blockEl) {
+                pushEditorHistory();
+                blockEl.style.setProperty('--block-bg', color);
+                blockEl.style.backgroundColor = color === 'transparent' ? 'transparent' : color;
+                blockEl.classList.add('is-edited');
+                const edit = getOrCreateTextEdit(pageData, editorSelectedElementId, blockEl);
+                if (edit) {
+                    edit.bgColor = color;
+                    edit.modified = true;
+                    edit.modifiedFormat = true;
+                }
                 saveEditorDraft();
             }
         }
@@ -2859,22 +4471,12 @@ function updateStrokeOrFontSize(val) {
                 const zoom = editorZoom || 1.0;
                 blockEl.style.fontSize = `${Math.round(editorFontSize * zoom)}px`;
                 blockEl.classList.add('is-edited');
-                if (!pageData.textEdits) pageData.textEdits = {};
-                if (!pageData.textEdits[editorSelectedElementId]) {
-                    const origItem = (pageData._cachedTextItems || []).find(it => it.id === editorSelectedElementId);
-                    pageData.textEdits[editorSelectedElementId] = {
-                        id: editorSelectedElementId,
-                        text: blockEl.innerText,
-                        left: origItem ? origItem.left : blockEl.offsetLeft,
-                        top: origItem ? origItem.top : blockEl.offsetTop,
-                        width: origItem ? origItem.width : blockEl.offsetWidth,
-                        height: origItem ? origItem.height : blockEl.offsetHeight,
-                        fontFamily: origItem ? origItem.fontFamily : 'Times New Roman'
-                    };
+                const edit = getOrCreateTextEdit(pageData, editorSelectedElementId, blockEl);
+                if (edit) {
+                    edit.fontSize = editorFontSize;
+                    edit.modified = true;
+                    edit.modifiedFormat = true;
                 }
-                pageData.textEdits[editorSelectedElementId].fontSize = editorFontSize;
-                pageData.textEdits[editorSelectedElementId].modified = true;
-                pageData.textEdits[editorSelectedElementId].modifiedFormat = true;
                 saveEditorDraft();
             }
         }
@@ -2896,22 +4498,12 @@ function setEditorFontFamily(font) {
                 pushEditorHistory();
                 blockEl.style.fontFamily = font;
                 blockEl.classList.add('is-edited');
-                if (!pageData.textEdits) pageData.textEdits = {};
-                if (!pageData.textEdits[editorSelectedElementId]) {
-                    const origItem = (pageData._cachedTextItems || []).find(it => it.id === editorSelectedElementId);
-                    pageData.textEdits[editorSelectedElementId] = {
-                        id: editorSelectedElementId,
-                        text: blockEl.innerText,
-                        left: origItem ? origItem.left : blockEl.offsetLeft,
-                        top: origItem ? origItem.top : blockEl.offsetTop,
-                        width: origItem ? origItem.width : blockEl.offsetWidth,
-                        height: origItem ? origItem.height : blockEl.offsetHeight,
-                        fontSize: origItem ? origItem.fontSize : 14
-                    };
+                const edit = getOrCreateTextEdit(pageData, editorSelectedElementId, blockEl);
+                if (edit) {
+                    edit.fontFamily = font;
+                    edit.modified = true;
+                    edit.modifiedFormat = true;
                 }
-                pageData.textEdits[editorSelectedElementId].fontFamily = font;
-                pageData.textEdits[editorSelectedElementId].modified = true;
-                pageData.textEdits[editorSelectedElementId].modifiedFormat = true;
                 saveEditorDraft();
             }
         }
@@ -2941,21 +4533,12 @@ function setEditorTextAlign(align) {
                 pushEditorHistory();
                 blockEl.style.textAlign = align;
                 blockEl.classList.add('is-edited');
-                if (!pageData.textEdits) pageData.textEdits = {};
-                if (!pageData.textEdits[editorSelectedElementId]) {
-                    const origItem = (pageData._cachedTextItems || []).find(it => it.id === editorSelectedElementId);
-                    pageData.textEdits[editorSelectedElementId] = {
-                        id: editorSelectedElementId,
-                        text: blockEl.innerText,
-                        left: origItem ? origItem.left : blockEl.offsetLeft,
-                        top: origItem ? origItem.top : blockEl.offsetTop,
-                        width: origItem ? origItem.width : blockEl.offsetWidth,
-                        height: origItem ? origItem.height : blockEl.offsetHeight
-                    };
+                const edit = getOrCreateTextEdit(pageData, editorSelectedElementId, blockEl);
+                if (edit) {
+                    edit.align = align;
+                    edit.modified = true;
+                    edit.modifiedFormat = true;
                 }
-                pageData.textEdits[editorSelectedElementId].align = align;
-                pageData.textEdits[editorSelectedElementId].modified = true;
-                pageData.textEdits[editorSelectedElementId].modifiedFormat = true;
                 saveEditorDraft();
             }
         }
@@ -2981,23 +4564,12 @@ function toggleEditorBold() {
                 newState = !curBold;
                 blockEl.style.fontWeight = newState ? 'bold' : 'normal';
                 blockEl.classList.add('is-edited');
-                if (!pageData.textEdits) pageData.textEdits = {};
-                if (!pageData.textEdits[editorSelectedElementId]) {
-                    const origItem = (pageData._cachedTextItems || []).find(it => it.id === editorSelectedElementId);
-                    pageData.textEdits[editorSelectedElementId] = {
-                        id: editorSelectedElementId,
-                        text: blockEl.innerText,
-                        left: origItem ? origItem.left : blockEl.offsetLeft,
-                        top: origItem ? origItem.top : blockEl.offsetTop,
-                        width: origItem ? origItem.width : blockEl.offsetWidth,
-                        height: origItem ? origItem.height : blockEl.offsetHeight,
-                        fontSize: origItem ? origItem.fontSize : 14,
-                        fontFamily: origItem ? origItem.fontFamily : 'Times New Roman'
-                    };
+                const edit = getOrCreateTextEdit(pageData, editorSelectedElementId, blockEl);
+                if (edit) {
+                    edit.isBold = newState;
+                    edit.modified = true;
+                    edit.modifiedFormat = true;
                 }
-                pageData.textEdits[editorSelectedElementId].isBold = newState;
-                pageData.textEdits[editorSelectedElementId].modified = true;
-                pageData.textEdits[editorSelectedElementId].modifiedFormat = true;
                 saveEditorDraft();
             }
         }
@@ -3024,23 +4596,12 @@ function toggleEditorItalic() {
                 newState = !curItalic;
                 blockEl.style.fontStyle = newState ? 'italic' : 'normal';
                 blockEl.classList.add('is-edited');
-                if (!pageData.textEdits) pageData.textEdits = {};
-                if (!pageData.textEdits[editorSelectedElementId]) {
-                    const origItem = (pageData._cachedTextItems || []).find(it => it.id === editorSelectedElementId);
-                    pageData.textEdits[editorSelectedElementId] = {
-                        id: editorSelectedElementId,
-                        text: blockEl.innerText,
-                        left: origItem ? origItem.left : blockEl.offsetLeft,
-                        top: origItem ? origItem.top : blockEl.offsetTop,
-                        width: origItem ? origItem.width : blockEl.offsetWidth,
-                        height: origItem ? origItem.height : blockEl.offsetHeight,
-                        fontSize: origItem ? origItem.fontSize : 14,
-                        fontFamily: origItem ? origItem.fontFamily : 'Times New Roman'
-                    };
+                const edit = getOrCreateTextEdit(pageData, editorSelectedElementId, blockEl);
+                if (edit) {
+                    edit.isItalic = newState;
+                    edit.modified = true;
+                    edit.modifiedFormat = true;
                 }
-                pageData.textEdits[editorSelectedElementId].isItalic = newState;
-                pageData.textEdits[editorSelectedElementId].modified = true;
-                pageData.textEdits[editorSelectedElementId].modifiedFormat = true;
                 saveEditorDraft();
             }
         }
@@ -3079,6 +4640,18 @@ function selectEditorElement(id) {
     document.querySelectorAll('#paperAnnotationLayer > div').forEach(div => {
         div.classList.toggle('selected-element', div.dataset.elementId === id);
     });
+    const pageData = editorPages.find(p => p.pageNumber === editorCurrentPage);
+    const el = pageData && pageData.elements ? pageData.elements.find(e => e.id === id) : null;
+    if (el && el.type === 'text') {
+        syncTextPropertiesToRibbon({
+            fontFamily: el.fontFamily,
+            fontSize: el.size,
+            isBold: !!el.bold,
+            isItalic: !!el.italic,
+            color: el.color,
+            align: el.align
+        });
+    }
 }
 
 function deleteSelectedEditorElement() {
@@ -3154,9 +4727,7 @@ function insertBlankPage(afterIndex = null) {
         originalPageNum: null,
         title: `Trang trắng mới (${newPageNum})`,
         rotation: 0,
-        elements: [
-            { id: 'el-' + Date.now(), type: 'text', text: `TRANG MỚI ĐƯỢC THÊM (#${newPageNum})`, x: 40, y: 320, size: 16, color: '#0F172A', bold: true }
-        ],
+        elements: [],
         textEdits: {},
         drawings: [],
         _cachedTextItems: []
@@ -3229,29 +4800,27 @@ function triggerImportPdfPage() {
     if (input) input.click();
 }
 
-function handleEditorFileImport(event) {
+async function handleEditorFileImport(event) {
     const file = event.target.files[0];
     if (!file) return;
 
-    setTimeout(() => {
+    try {
+        const source = await createEditorSource(file);
         pushEditorHistory();
-        const newPage = {
-            id: Date.now(),
-            pageNumber: editorPages.length + 1,
-            title: `Nhập từ ${file.name}`,
-            rotation: 0,
-            elements: [
-                { id: 'el-' + Date.now(), type: 'text', text: `TỆP NHẬP: ${file.name}`, x: 40, y: 320, size: 16, color: '#2563EB', bold: true }
-            ]
-        };
-        editorPages.push(newPage);
+        const importedPages = pagesFromEditorSource(source);
+        editorPages.push(...importedPages);
         reindexEditorPages();
-        editorCurrentPage = newPage.pageNumber;
+        editorCurrentPage = importedPages[0].pageNumber;
         renderEditorThumbnails();
         renderEditorCanvas();
         updateEditorFloatingInfo();
-        showToast(`✓ Đã nhập thành công trang mới từ ${file.name}`, 'success');
-    }, 600);
+        saveEditorDraft();
+        showToast(`✓ Đã nhập ${importedPages.length} trang từ ${file.name}.`, 'success');
+    } catch (err) {
+        showToast('Không thể nhập PDF: ' + err.message, 'error');
+    } finally {
+        if (event.target && 'value' in event.target) event.target.value = '';
+    }
 }
 
 function handleEditorFileDrop(event) {
@@ -3280,7 +4849,7 @@ function handleEditorAnnotationImageUpload(event) {
     }
 
     const reader = new FileReader();
-    reader.onload = function(e) {
+    reader.onload = function (e) {
         const dataUrl = e.target.result;
         const pageData = editorPages.find(p => p.pageNumber === editorCurrentPage);
         if (!pageData) return;
@@ -3318,11 +4887,9 @@ function setupDrawingCanvasInteractions() {
         const rect = canvas.getBoundingClientRect();
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
         return {
-            x: (clientX - rect.left) * scaleX,
-            y: (clientY - rect.top) * scaleY
+            x: (clientX - rect.left) / editorZoom,
+            y: (clientY - rect.top) / editorZoom
         };
     }
 
@@ -3344,6 +4911,7 @@ function setupDrawingCanvasInteractions() {
     function startDraw(e) {
         if (editorActiveTool === 'eraser' || isPenEraserMode) {
             isDrawing = true;
+            pushEditorHistory();
             const pos = getCoords(e);
             eraseDrawingAt(pos);
             if (e.cancelable) e.preventDefault();
@@ -3360,6 +4928,8 @@ function setupDrawingCanvasInteractions() {
         const pos = getCoords(e);
         currentStroke = [pos];
 
+        const drawScale = canvas.width / rectWidth(canvas) * editorZoom;
+        ctx.setTransform(drawScale, 0, 0, drawScale, 0, 0);
         ctx.beginPath();
         ctx.moveTo(pos.x, pos.y);
 
@@ -3431,11 +5001,16 @@ function setupDrawingCanvasInteractions() {
     canvas.addEventListener('touchend', endDraw);
 }
 
+function rectWidth(canvas) { return canvas.getBoundingClientRect().width || 1; }
+
 function renderPageDrawings(pageData) {
     const canvas = document.getElementById('paperDrawingCanvas');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const drawScale = canvas.width / rectWidth(canvas) * editorZoom;
+    ctx.setTransform(drawScale, 0, 0, drawScale, 0, 0);
 
     if (!pageData || !pageData.drawings || pageData.drawings.length === 0) return;
 
@@ -3479,21 +5054,55 @@ function toggleEditorPan() {
     const viewport = document.getElementById('editorViewport');
     if (btn) btn.classList.toggle('active', isEditorPanMode);
     if (viewport) viewport.classList.toggle('panning-active', isEditorPanMode);
+    if (viewport && !viewport.dataset.panBound) {
+        viewport.dataset.panBound = 'true';
+        viewport.addEventListener('pointerdown', event => {
+            if (!isEditorPanMode || event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const startX = event.clientX, startY = event.clientY;
+            const left = viewport.scrollLeft, top = viewport.scrollTop;
+            const move = e => { viewport.scrollLeft = left - (e.clientX - startX); viewport.scrollTop = top - (e.clientY - startY); };
+            const end = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', end); };
+            window.addEventListener('pointermove', move);
+            window.addEventListener('pointerup', end);
+        }, true);
+    }
 }
 
 function fitEditorToScreen() {
-    editorZoom = 0.85;
+    const viewport = document.getElementById('editorViewport');
+    const canvas = document.getElementById('pdfRenderCanvas');
+    if (!viewport || !canvas || !canvas.clientWidth || !canvas.clientHeight) return;
+    const pageWidth = canvas.clientWidth / editorZoom;
+    const pageHeight = canvas.clientHeight / editorZoom;
+    editorZoom = Math.max(0.4, Math.min(2.5, (viewport.clientWidth - 40) / pageWidth, (viewport.clientHeight - 40) / pageHeight));
     const label = document.getElementById('floatingZoomLevel');
-    if (label) label.innerText = '85%';
+    if (label) label.innerText = `${Math.round(editorZoom * 100)}%`;
     renderEditorCanvas();
 }
 
 // Tự động lưu bản nháp chỉnh sửa vào LocalStorage để không bị mất khi F5
 function saveEditorDraft() {
+    if (editorDraftRecoveryBlocked) return;
     const docId = localStorage.getItem('editor_current_doc_id');
-    if (docId && editorPages && editorPages.length > 0) {
+    const docName = localStorage.getItem('editor_current_doc_name') || currentDocumentName || 'tailieu';
+    const draftKey = docId ? ('doc_' + docId) : ('file_' + docName.replace(/[^a-zA-Z0-9_-]/g, '_'));
+    if (editorPages && editorPages.length > 0) {
         try {
-            localStorage.setItem('editor_draft_' + docId, JSON.stringify(editorPages));
+            // Không lưu _cachedTextItems vào localStorage để tránh làm kẹt cache cũ
+            const cleanPages = editorPages.map(p => {
+                const copy = { ...p };
+                delete copy._cachedTextItems;
+                if (copy.elements) {
+                    copy.elements = copy.elements.filter(el => el.type !== 'text' || (el.text && el.text.trim() !== 'Gõ nội dung tại đây...'));
+                }
+                return copy;
+            });
+            localStorage.setItem('editor_draft_' + draftKey, JSON.stringify(cleanPages));
+            if (docId) {
+                localStorage.setItem('editor_draft_' + docId, JSON.stringify(cleanPages));
+            }
         } catch (e) {
             console.warn('Lỗi lưu nháp vào LocalStorage:', e);
         }
@@ -3505,7 +5114,7 @@ function pushEditorHistory() {
     editorHistoryStack.push(JSON.stringify(editorPages));
     if (editorHistoryStack.length > 25) editorHistoryStack.shift();
     editorRedoStack = [];
-    saveEditorDraft();
+    setTimeout(saveEditorDraft, 0);
 }
 
 function editorUndo() {
@@ -3532,14 +5141,8 @@ function editorRedo() {
 
 async function printPdfDocument() {
     try {
-        let pdfBlobUrl = '';
-        if (currentPdfBytes) {
-            const blob = new Blob([currentPdfBytes], { type: 'application/pdf' });
-            pdfBlobUrl = URL.createObjectURL(blob);
-        } else {
-            const rawDocUrl = localStorage.getItem('editor_current_doc_url');
-            if (rawDocUrl) pdfBlobUrl = rawDocUrl;
-        }
+        const blob = await finishAndSaveDocument(true);
+        const pdfBlobUrl = URL.createObjectURL(blob);
 
         if (pdfBlobUrl) {
             let printFrame = document.getElementById('pdfPrintHiddenFrame');
@@ -3559,13 +5162,12 @@ async function printPdfDocument() {
                 setTimeout(() => {
                     printFrame.contentWindow.focus();
                     printFrame.contentWindow.print();
+                    setTimeout(() => URL.revokeObjectURL(pdfBlobUrl), 60000);
                 }, 400);
             };
-        } else {
-            window.print();
         }
     } catch (e) {
-        window.print();
+        showToast('Không thể tạo bản in: ' + e.message, 'error');
     }
 }
 
@@ -3677,10 +5279,13 @@ async function executeEditorSearch(direction = 1, isNewQuery = false) {
 
         // 2. Tìm trong văn bản gốc của Mozilla PDF.js
         if (currentPdfDoc) {
-            for (let i = 1; i <= currentPdfDoc.numPages; i++) {
+            for (const pageData of editorPages) {
+                if (pageData.isBlankPage || !pageData.originalPageNum) continue;
+                const i = pageData.pageNumber;
                 try {
-                    const page = await currentPdfDoc.getPage(i);
-                    const pageData = (editorPages || []).find(p => p.pageNumber === i) || { rotation: 0 };
+                    const source = editorSourceForPage(pageData);
+                    if (!source || !source.doc) throw new Error('Không tìm thấy PDF nguồn.');
+                    const page = await source.doc.getPage(pageData.originalPageNum);
                     const effRot = (page.rotate + (pageData.rotation || 0)) % 360;
                     const viewport = page.getViewport({ scale: editorZoom, rotation: effRot });
                     const textContent = await page.getTextContent();
@@ -3814,13 +5419,14 @@ function renderSearchHighlightsOnCurrentPage() {
 // Đổi tệp PDF khác với xác nhận và xóa trạng thái
 function switchPdfFile() {
     if (hasLoadedFile) {
-        const confirmSwitch = confirm('Bạn có chắc chắn muốn đổi sang tệp PDF khác? Mọi chỉnh sửa hiện tại đã được tự động lưu nháp.');
+        const confirmSwitch = confirm('Bạn có chắc chắn muốn đổi sang tệp PDF khác? Hãy xuất tệp trước khi đổi để tránh mất các thay đổi chưa lưu.');
         if (!confirmSwitch) return;
     }
 
     localStorage.removeItem('editor_current_doc_id');
     localStorage.removeItem('editor_current_doc_name');
     localStorage.removeItem('editor_current_doc_url');
+    localStorage.removeItem('editor_local_source_id');
 
     if (window.history && window.history.replaceState) {
         window.history.replaceState({ view: 'editor' }, '', '/editor');
@@ -3829,6 +5435,9 @@ function switchPdfFile() {
     hasLoadedFile = false;
     currentPdfDoc = null;
     currentPdfBytes = null;
+    editorSources.clear();
+    editorHistoryStack = [];
+    editorRedoStack = [];
     editorPages = [];
 
     showEditorUploadState();
@@ -3963,7 +5572,7 @@ function handleSigImageUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = function(e) {
+    reader.onload = function (e) {
         sigUploadedData = e.target.result;
         const img = document.getElementById('sigUploadedImg');
         const wrap = document.getElementById('sigImagePreviewContainer');
@@ -4133,19 +5742,11 @@ function removeVietnameseTones(str) {
 
 function drawSafeText(page, text, options) {
     if (!text) return;
-    try {
-        page.drawText(text, options);
-    } catch (err) {
-        try {
-            page.drawText(removeVietnameseTones(text), options);
-        } catch (e2) {
-            console.warn('drawSafeText fallback failed:', e2);
-        }
-    }
+    page.drawText(text, options);
 }
 
 // Hoàn thành biên tập và xuất tệp PDF hoàn chỉnh chuẩn PDFaid
-async function finishAndSaveDocument() {
+async function finishAndSaveDocument(compileOnly = false) {
     try {
         let finalPdfBlob = null;
         let finalBase64 = '';
@@ -4169,28 +5770,68 @@ async function finishAndSaveDocument() {
             }
         }
 
+        if (!window.PDFLib || !editorPages.length) throw new Error('Không có tài liệu hoặc thư viện PDF chưa sẵn sàng.');
         if (window.PDFLib) {
             let pdfDoc = null;
             if (rawBytes && rawBytes.byteLength > 0) {
-                try {
-                    pdfDoc = await PDFLib.PDFDocument.load(rawBytes, { ignoreEncryption: true });
-                } catch (loadErr) {
-                    console.warn('Không thể load file PDF gốc bằng PDFLib, sẽ tạo tài liệu mới:', loadErr);
-                    pdfDoc = null;
-                }
+                pdfDoc = await PDFLib.PDFDocument.load(rawBytes);
             }
-            const numPages = pdfDoc ? pdfDoc.getPageCount() : 0;
+            const importedDocs = new Map();
 
             // Tạo tài liệu xuất mới hỗ trợ xoay trang và nhúng chú thích
             const newPdf = await PDFLib.PDFDocument.create();
+
+            if (window.fontkit && newPdf.registerFontkit) {
+                newPdf.registerFontkit(window.fontkit);
+            }
+
+            // Chuẩn bị các font chuẩn
+            const helvetica = await newPdf.embedFont(PDFLib.StandardFonts.Helvetica);
+            const helveticaBold = await newPdf.embedFont(PDFLib.StandardFonts.HelveticaBold);
+            const helveticaOblique = await newPdf.embedFont(PDFLib.StandardFonts.HelveticaOblique);
+            const timesRoman = await newPdf.embedFont(PDFLib.StandardFonts.TimesRoman);
+            const timesRomanBold = await newPdf.embedFont(PDFLib.StandardFonts.TimesRomanBold);
+            const timesRomanItalic = await newPdf.embedFont(PDFLib.StandardFonts.TimesRomanItalic);
+            const courier = await newPdf.embedFont(PDFLib.StandardFonts.Courier);
+            const courierBold = await newPdf.embedFont(PDFLib.StandardFonts.CourierBold);
+
+            // Nạp font TrueType chuẩn hỗ trợ 100% tiếng Việt Unicode (Arial & Times New Roman)
+            let customArial = null;
+            let customArialBold = null;
+            let customTimes = null;
+            let customTimesBold = null;
+            if (window.fontkit && newPdf.registerFontkit) {
+                try {
+                    const [abArial, abArialBd, abTimes, abTimesBd] = await Promise.all([
+                        fetch('/assets/fonts/arial.ttf').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null),
+                        fetch('/assets/fonts/arialbd.ttf').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null),
+                        fetch('/assets/fonts/times.ttf').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null),
+                        fetch('/assets/fonts/timesbd.ttf').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null)
+                    ]);
+                    if (abArial) customArial = await newPdf.embedFont(abArial);
+                    if (abArialBd) customArialBold = await newPdf.embedFont(abArialBd);
+                    if (abTimes) customTimes = await newPdf.embedFont(abTimes);
+                    if (abTimesBd) customTimesBold = await newPdf.embedFont(abTimesBd);
+                } catch (fErr) {
+                    console.warn('Lỗi embed font Unicode tiếng Việt:', fErr);
+                }
+            }
 
             for (const pageItem of editorPages) {
                 let targetPage = null;
                 const origIndex = (pageItem.originalPageNum || 0) - 1;
 
-                if (pdfDoc && !pageItem.isBlankPage && pageItem.originalPageNum && origIndex >= 0 && origIndex < numPages) {
-                    const [copiedPage] = await newPdf.copyPages(pdfDoc, [origIndex]);
-                    targetPage = copiedPage;
+                if (!pageItem.isBlankPage) {
+                    let sourceDoc = pdfDoc;
+                    if (pageItem.sourceId) {
+                        const source = editorSources.get(pageItem.sourceId);
+                        if (!source) throw new Error('Không tìm thấy PDF nhập thêm. Vui lòng nhập lại tệp.');
+                        if (!importedDocs.has(pageItem.sourceId)) importedDocs.set(pageItem.sourceId, await PDFLib.PDFDocument.load(source.bytes));
+                        sourceDoc = importedDocs.get(pageItem.sourceId);
+                    }
+                    if (!sourceDoc || origIndex < 0 || origIndex >= sourceDoc.getPageCount()) throw new Error('Không tìm thấy trang PDF nguồn.');
+                    const [copiedPage] = await newPdf.copyPages(sourceDoc, [origIndex]);
+                    targetPage = newPdf.addPage(copiedPage);
                 } else {
                     // Trang mới thêm (trang trắng) - tạo trang A4 mới tinh
                     targetPage = newPdf.addPage([595.28, 841.89]);
@@ -4202,48 +5843,58 @@ async function finishAndSaveDocument() {
                     targetPage.setRotation(PDFLib.degrees((currentRot + pageItem.rotation) % 360));
                 }
 
-                const { width, height } = targetPage.getSize();
-
-                // Chuẩn bị các font chuẩn
-                const helvetica = await newPdf.embedFont(PDFLib.StandardFonts.Helvetica);
-                const helveticaBold = await newPdf.embedFont(PDFLib.StandardFonts.HelveticaBold);
-                const helveticaOblique = await newPdf.embedFont(PDFLib.StandardFonts.HelveticaOblique);
-                const timesRoman = await newPdf.embedFont(PDFLib.StandardFonts.TimesRoman);
-                const timesRomanBold = await newPdf.embedFont(PDFLib.StandardFonts.TimesRomanBold);
-                const timesRomanItalic = await newPdf.embedFont(PDFLib.StandardFonts.TimesRomanItalic);
-                const courier = await newPdf.embedFont(PDFLib.StandardFonts.Courier);
-                const courierBold = await newPdf.embedFont(PDFLib.StandardFonts.CourierBold);
-                const helveticaFont = helvetica;
+                const rotation = ((targetPage.getRotation().angle % 360) + 360) % 360;
+                const crop = targetPage.getCropBox();
+                const width = rotation % 180 ? crop.height : crop.width;
+                const height = rotation % 180 ? crop.width : crop.height;
+                const transforms = {
+                    0: [1, 0, 0, 1, crop.x, crop.y],
+                    90: [0, 1, -1, 0, crop.x + crop.width, crop.y],
+                    180: [-1, 0, 0, -1, crop.x + crop.width, crop.y + crop.height],
+                    270: [0, -1, 1, 0, crop.x, crop.y + crop.height]
+                };
+                targetPage.pushOperators(PDFLib.pushGraphicsState(), PDFLib.concatTransformationMatrix(...(transforms[rotation] || transforms[0])));
 
                 // 1. Nhúng các khối văn bản gốc đã chỉnh sửa (Khớp 100% Chỉnh sửa văn bản)
                 if (pageItem.textEdits && Object.keys(pageItem.textEdits).length > 0) {
                     for (const textId of Object.keys(pageItem.textEdits)) {
                         const edit = pageItem.textEdits[textId];
-                        if (!edit || !edit.text) continue;
+                        if (!edit || (!edit.modified && !edit.modifiedFormat)) continue;
 
                         const pdfX = edit.left;
                         const pdfY = height - (edit.top + edit.height);
                         const pdfW = Math.max(16, edit.width);
                         const pdfH = Math.max(12, edit.height);
 
-                        // Vẽ hình chữ nhật trắng che phủ chữ gốc trên PDF để không bị đè chữ
-                        targetPage.drawRectangle({
-                            x: pdfX,
-                            y: pdfY,
-                            width: pdfW,
-                            height: pdfH,
-                            color: PDFLib.rgb(1, 1, 1)
-                        });
+                        // Vẽ hình chữ nhật che phủ chữ gốc trên PDF theo đúng màu nền slide / trang
+                        const blockBg = edit.bgColor || '#FFFFFF';
+                        if (blockBg !== 'transparent') {
+                            let bgR = 1, bgG = 1, bgB = 1;
+                            if (blockBg.startsWith('#') && blockBg.length >= 7) {
+                                bgR = parseInt(blockBg.slice(1, 3), 16) / 255;
+                                bgG = parseInt(blockBg.slice(3, 5), 16) / 255;
+                                bgB = parseInt(blockBg.slice(5, 7), 16) / 255;
+                            }
+                            targetPage.drawRectangle({
+                                x: Math.max(0, pdfX - 1),
+                                y: Math.max(0, pdfY - 2),
+                                width: pdfW + 2,
+                                height: pdfH + 4,
+                                color: PDFLib.rgb(bgR, bgG, bgB)
+                            });
+                        }
 
-                        // Xác định font phù hợp
-                        let chosenFont = timesRoman;
+                        // Xác định font phù hợp ưu tiên font Unicode tiếng Việt
+                        let chosenFont = customTimes || timesRoman;
                         const fLower = (edit.fontFamily || '').toLowerCase();
                         if (fLower.includes('helvetica') || fLower.includes('arial') || fLower.includes('sans')) {
-                            chosenFont = edit.isBold ? helveticaBold : (edit.isItalic ? helveticaOblique : helvetica);
+                            if (edit.isBold) chosenFont = customArialBold || customArial || helveticaBold;
+                            else chosenFont = customArial || helvetica;
                         } else if (fLower.includes('courier') || fLower.includes('mono')) {
                             chosenFont = edit.isBold ? courierBold : courier;
                         } else {
-                            chosenFont = edit.isBold ? timesRomanBold : (edit.isItalic ? timesRomanItalic : timesRoman);
+                            if (edit.isBold) chosenFont = customTimesBold || customTimes || timesRomanBold;
+                            else chosenFont = customTimes || timesRoman;
                         }
 
                         let fontColor = PDFLib.rgb(0.06, 0.09, 0.16);
@@ -4256,17 +5907,20 @@ async function finishAndSaveDocument() {
                             }
                         }
 
-                        const lines = edit.text.split('\n');
+                        const lines = (edit.text || '').split('\n');
                         const baseFontSize = Math.max(8, edit.fontSize || 12);
                         const lineHeight = baseFontSize * 1.25;
 
                         lines.forEach((lineText, lIdx) => {
                             if (!lineText) return;
+                            const lineWidth = chosenFont.widthOfTextAtSize(lineText, baseFontSize);
+                            const alignOffset = edit.align === 'center' ? (pdfW - lineWidth) / 2 : edit.align === 'right' ? pdfW - lineWidth : 0;
                             drawSafeText(targetPage, lineText, {
-                                x: pdfX,
+                                x: pdfX + Math.max(0, alignOffset),
                                 y: pdfY + pdfH - (lIdx + 1) * lineHeight + 2,
                                 size: baseFontSize,
                                 font: chosenFont,
+                                xSkew: PDFLib.degrees(edit.isItalic ? 12 : 0),
                                 color: fontColor
                             });
                         });
@@ -4280,7 +5934,7 @@ async function finishAndSaveDocument() {
                         offCanvas.width = width;
                         offCanvas.height = height;
                         const offCtx = offCanvas.getContext('2d');
-                        const scaleFactor = width / (pageItem.renderedWidth || 595);
+                        const scaleFactor = 1;
 
                         pageItem.drawings.forEach(stroke => {
                             if (!stroke.points || stroke.points.length === 0) return;
@@ -4308,33 +5962,39 @@ async function finishAndSaveDocument() {
                             width: width,
                             height: height
                         });
-                    } catch (drawErr) {
-                        console.warn('Lỗi nhúng nét vẽ vào PDF:', drawErr);
-                    }
+                    } catch (drawErr) { throw new Error('Không thể xuất nét vẽ: ' + drawErr.message); }
                 }
 
                 // 3. Nhúng tất cả đối tượng chú thích: Văn bản, Chữ ký, Ảnh, Hình khối, Con dấu, Liên kết, Ghi chú
                 if (pageItem.elements && pageItem.elements.length > 0) {
                     for (const el of pageItem.elements) {
-                        const scaleFactor = width / (pageItem.renderedWidth || 595);
+                        const scaleFactor = 1;
 
-                        if (el.type === 'text' && el.text) {
+                        if (el.type === 'text' && el.text && el.text.trim() !== 'Gõ nội dung tại đây...') {
                             try {
-                                const pdfX = (el.x || 40) * scaleFactor;
-                                const pdfY = height - ((el.y || 40) + (el.size || 14)) * scaleFactor;
-                                let chosenFont = el.bold ? helveticaBold : helvetica;
-                                if (el.fontFamily && el.fontFamily.toLowerCase().includes('times')) {
-                                    chosenFont = el.bold ? timesRomanBold : timesRoman;
+                                const pdfX = (el.x ?? 40) * scaleFactor;
+                                const pdfY = height - ((el.y ?? 40) + (el.size || 14)) * scaleFactor;
+                                let chosenFont = customArial || helvetica;
+                                const fLower = (el.fontFamily || '').toLowerCase();
+                                if (fLower.includes('times')) {
+                                    chosenFont = el.bold ? (customTimesBold || customTimes || timesRomanBold) : (customTimes || timesRoman);
+                                } else {
+                                    chosenFont = el.bold ? (customArialBold || customArial || helveticaBold) : (customArial || helvetica);
                                 }
 
-                                drawSafeText(targetPage, el.text, {
-                                    x: Math.max(10, Math.min(width - 50, pdfX)),
-                                    y: Math.max(10, Math.min(height - 20, pdfY)),
-                                    size: Math.max(9, (el.size || 14) * scaleFactor),
-                                    font: chosenFont,
-                                    color: (el.color && el.color.startsWith('#')) ? parseColorToPdfLib(el.color) : PDFLib.rgb(0.06, 0.09, 0.16)
+                                const size = Math.max(1, (el.size || 14) * scaleFactor);
+                                const lines = el.text.split('\n');
+                                const boxWidth = el.width || Math.max(...lines.map(line => chosenFont.widthOfTextAtSize(line, size)));
+                                lines.forEach((line, index) => {
+                                    if (!line) return;
+                                    const lineWidth = chosenFont.widthOfTextAtSize(line, size);
+                                    const offset = el.align === 'center' ? (boxWidth - lineWidth) / 2 : el.align === 'right' ? boxWidth - lineWidth : 0;
+                                    drawSafeText(targetPage, line, { x: pdfX + offset, y: pdfY - index * size * 1.2,
+                                        size, font: chosenFont, xSkew: PDFLib.degrees(el.italic ? 12 : 0),
+                                        opacity: el.opacity ?? 1,
+                                        color: (el.color && el.color.startsWith('#')) ? parseColorToPdfLib(el.color) : PDFLib.rgb(0.06, 0.09, 0.16) });
                                 });
-                            } catch (te) {}
+                            } catch (te) { throw new Error('Không thể xuất văn bản: ' + te.message); }
                         } else if (el.type === 'signature') {
                             try {
                                 const pdfX = (el.x || 40) * scaleFactor;
@@ -4356,13 +6016,11 @@ async function finishAndSaveDocument() {
                                         x: pdfX,
                                         y: pdfY + 8,
                                         size: Math.max(14, (el.size || 28) * scaleFactor),
-                                        font: timesRomanItalic,
+                                        font: customTimes || timesRomanItalic,
                                         color: parseColorToPdfLib(el.color, PDFLib.rgb(0, 0, 0))
                                     });
                                 }
-                            } catch (sigErr) {
-                                console.warn('Lỗi nhúng chữ ký:', sigErr);
-                            }
+                            } catch (sigErr) { throw new Error('Không thể xuất chữ ký: ' + sigErr.message); }
                         } else if (el.type === 'image' && el.data) {
                             try {
                                 let finalDataUrl = el.data;
@@ -4414,9 +6072,7 @@ async function finishAndSaveDocument() {
                                         opacity: el.opacity !== undefined ? el.opacity : 1.0
                                     });
                                 }
-                            } catch (imgErr) {
-                                console.warn('Lỗi nhúng ảnh vào PDF:', imgErr);
-                            }
+                            } catch (imgErr) { throw new Error('Không thể xuất ảnh: ' + imgErr.message); }
                         } else if (el.type === 'shape') {
                             try {
                                 const shapeX = (el.x || 40) * scaleFactor;
@@ -4471,10 +6127,15 @@ async function finishAndSaveDocument() {
                                         borderWidth: strokeW,
                                         color: (el.fill && el.fill !== 'none') ? parseColorToPdfLib(el.fill, PDFLib.rgb(1, 1, 1)) : undefined
                                     });
+                                } else if (el.shapeType === 'polygon') {
+                                    const w = (el.width || 160) * scaleFactor;
+                                    const h = (el.height || 110) * scaleFactor;
+                                    targetPage.drawSvgPath(`M ${w / 2} 0 L ${w} ${h * 0.38} L ${w * 0.82} ${h} L ${w * 0.18} ${h} L 0 ${h * 0.38} Z`, {
+                                        x: shapeX, y: shapeY, borderColor: shapeColor, borderWidth: strokeW,
+                                        color: (el.fill && el.fill !== 'none') ? parseColorToPdfLib(el.fill) : undefined
+                                    });
                                 }
-                            } catch (shapeErr) {
-                                console.warn('Lỗi nhúng hình học vào PDF:', shapeErr);
-                            }
+                            } catch (shapeErr) { throw new Error('Không thể xuất hình học: ' + shapeErr.message); }
                         } else if (el.type === 'stamp') {
                             try {
                                 const stampW = 150 * scaleFactor;
@@ -4491,9 +6152,7 @@ async function finishAndSaveDocument() {
                                     height: stampH,
                                     opacity: el.opacity !== undefined ? el.opacity : 1.0
                                 });
-                            } catch (stampErr) {
-                                console.warn('Lỗi nhúng con dấu vào PDF:', stampErr);
-                            }
+                            } catch (stampErr) { throw new Error('Không thể xuất con dấu: ' + stampErr.message); }
                         } else if (el.type === 'link') {
                             try {
                                 const linkX = (el.x || 40) * scaleFactor;
@@ -4516,11 +6175,23 @@ async function finishAndSaveDocument() {
                                     x: linkX + 8 * scaleFactor,
                                     y: linkY + 8 * scaleFactor,
                                     size: 10 * scaleFactor,
-                                    font: helvetica,
+                                    font: customArial || helvetica,
                                     color: PDFLib.rgb(0.12, 0.35, 0.88)
                                 });
+                                const url = new URL(el.url);
+                                if (!['http:', 'https:', 'mailto:'].includes(url.protocol)) throw new Error('Địa chỉ liên kết không được hỗ trợ.');
+                                const matrix = transforms[rotation] || transforms[0];
+                                const transformPoint = (x, y) => [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
+                                const a = transformPoint(linkX, linkY);
+                                const b = transformPoint(linkX + linkW, linkY + linkH);
+                                const annotation = newPdf.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])], Border: [0, 0, 0], A: { Type: 'Action', S: 'URI', URI: PDFLib.PDFString.of(url.href) } });
+                                const annotationRef = newPdf.context.register(annotation);
+                                const annotsKey = PDFLib.PDFName.of('Annots');
+                                let annots = targetPage.node.lookup(annotsKey, PDFLib.PDFArray);
+                                if (!annots) { annots = newPdf.context.obj([]); targetPage.node.set(annotsKey, annots); }
+                                annots.push(annotationRef);
                             } catch (lnkErr) {
-                                console.warn('Lỗi nhúng liên kết vào PDF:', lnkErr);
+                                throw new Error('Liên kết không hợp lệ: ' + lnkErr.message);
                             }
                         } else if (el.type === 'note') {
                             try {
@@ -4551,36 +6222,33 @@ async function finishAndSaveDocument() {
                                     x: noteX + 6 * scaleFactor,
                                     y: noteY + noteH - 15 * scaleFactor,
                                     size: 9.5 * scaleFactor,
-                                    font: helveticaBold,
+                                    font: customArialBold || customArial || helveticaBold,
                                     color: PDFLib.rgb(0.57, 0.42, 0.04)
                                 });
 
                                 if (el.text) {
-                                    const lines = el.text.split('\n').slice(0, 5);
+                                    const lines = el.text.split('\n');
+                                    if (lines.length > 5 || lines.some(line => line.length > 42)) throw new Error('Ghi chú quá dài để xuất đầy đủ; hãy rút ngắn hoặc tách thành nhiều ghi chú.');
                                     lines.forEach((line, lIdx) => {
-                                        drawSafeText(targetPage, line.substring(0, 42), {
+                                        drawSafeText(targetPage, line, {
                                             x: noteX + 6 * scaleFactor,
                                             y: noteY + noteH - 36 * scaleFactor - (lIdx * 13 * scaleFactor),
                                             size: 9 * scaleFactor,
-                                            font: helvetica,
+                                            font: customArial || helvetica,
                                             color: PDFLib.rgb(0.2, 0.2, 0.2)
                                         });
                                     });
                                 }
-                            } catch (noteErr) {
-                                console.warn('Lỗi nhúng ghi chú vào PDF:', noteErr);
-                            }
+                            } catch (noteErr) { throw new Error('Không thể xuất ghi chú: ' + noteErr.message); }
                         }
                     }
                 }
-
-                if (pdfDoc && !pageItem.isBlankPage && pageItem.originalPageNum && origIndex >= 0 && origIndex < numPages) {
-                    newPdf.addPage(targetPage);
-                }
+                targetPage.pushOperators(PDFLib.popGraphicsState());
             }
 
             const modifiedPdfBytes = await newPdf.save();
             finalPdfBlob = new Blob([modifiedPdfBytes], { type: 'application/pdf' });
+            if (compileOnly) return finalPdfBlob;
 
             // Chuyển sang base64 để lưu vào backend
             const reader = new FileReader();
@@ -4606,6 +6274,7 @@ async function finishAndSaveDocument() {
 
         // Lưu vào MySQL và thư mục storage/exports của backend
         let backendResult = null;
+        window.currentOutputId = null;
         const activeDocId = window.currentDocumentId || localStorage.getItem('editor_current_doc_id') || 0;
         if (finalBase64) {
             try {
@@ -4618,17 +6287,21 @@ async function finishAndSaveDocument() {
                         pdf_base64: finalBase64,
                         total_pages: editorPages.length,
                         manifest: editorPages.map(p => ({
-                            source_doc: currentDocumentName || 'tailieu.pdf',
-                            source_page: p.originalPageNum || p.pageNumber,
+                            source_doc: p.isBlankPage ? null : (editorSourceForPage(p)?.name || currentDocumentName || 'tailieu.pdf'),
+                            source_page: p.originalPageNum || null,
                             rotation: p.rotation || 0
                         }))
                     })
                 });
                 backendResult = await res.json();
+                if (!res.ok || !backendResult || backendResult.status !== 'success') throw new Error((backendResult && backendResult.message) || 'Không thể lưu lên máy chủ.');
+                if (backendResult.output_id) {
+                    window.currentOutputId = backendResult.output_id;
+                }
                 if (activeDocId) {
                     updateLocalDocStatus(activeDocId, 'exported');
                 }
-            } catch (be) {}
+            } catch (be) { backendResult = null; showToast('Đã tạo PDF cục bộ nhưng chưa lưu lên máy chủ: ' + be.message, 'error'); }
         }
 
         const docNameEl = document.getElementById('expDocName');
@@ -4645,8 +6318,9 @@ async function finishAndSaveDocument() {
             }
         }
         openModal('exportSuccessModal');
-        showToast(`✓ Đã xuất và tải về "${exportFileName}" thành công!`, 'success');
+        showToast(backendResult && backendResult.status === 'success' ? `✓ Đã xuất, tải về và lưu "${exportFileName}".` : `✓ Đã tạo và tải về "${exportFileName}"; chưa lưu lên máy chủ.`, backendResult && backendResult.status === 'success' ? 'success' : 'info');
     } catch (err) {
+        if (compileOnly) throw err;
         console.error('Lỗi xuất tệp PDF:', err);
         showToast('Có lỗi xảy ra khi xuất PDF: ' + err.message, 'error');
     }
@@ -4667,23 +6341,8 @@ function openPageManagerModal() {
             window.pmSelectedPages = new Set();
         }
         if (!editorPages || editorPages.length === 0) {
-            if (currentPdfDoc) {
-                editorPages = [];
-                for (let i = 1; i <= currentPdfDoc.numPages; i++) {
-                    editorPages.push({ id: i, pageNumber: i, originalPageNum: i, title: `Trang ${i}`, rotation: 0, elements: [], drawings: [] });
-                }
-            } else {
-                editorPages = [
-                    { id: 1, pageNumber: 1, originalPageNum: 1, title: 'Trang 1', rotation: 0, elements: [], drawings: [] },
-                    { id: 2, pageNumber: 2, originalPageNum: 2, title: 'Trang 2', rotation: 0, elements: [], drawings: [] },
-                    { id: 3, pageNumber: 3, originalPageNum: 3, title: 'Trang 3', rotation: 0, elements: [], drawings: [] },
-                    { id: 4, pageNumber: 4, originalPageNum: 4, title: 'Trang 4', rotation: 0, elements: [], drawings: [] },
-                    { id: 5, pageNumber: 5, originalPageNum: 5, title: 'Trang 5', rotation: 0, elements: [], drawings: [] },
-                    { id: 6, pageNumber: 6, originalPageNum: 6, title: 'Trang 6', rotation: 0, elements: [], drawings: [] },
-                    { id: 7, pageNumber: 7, originalPageNum: 7, title: 'Trang 7', rotation: 0, elements: [], drawings: [] },
-                    { id: 8, pageNumber: 8, originalPageNum: 8, title: 'Trang 8', rotation: 0, elements: [], drawings: [] }
-                ];
-            }
+            showToast('Vui lòng mở tài liệu trước khi quản lý trang.', 'info');
+            return;
         }
         pmTempPages = JSON.parse(JSON.stringify(editorPages));
         pmSelectedPages.clear();
@@ -4782,8 +6441,9 @@ function renderPmGrid() {
                     ctx.strokeStyle = '#E2E8F0';
                     ctx.strokeRect(1, 1, thumbCanvas.width - 2, thumbCanvas.height - 2);
                 } else {
-                    const pageNum = Math.min(page.originalPageNum || page.pageNumber, currentPdfDoc.numPages);
-                    currentPdfDoc.getPage(pageNum).then(pdfPage => {
+                    const source = editorSourceForPage(page);
+                    if (!source || !source.doc) return;
+                    source.doc.getPage(page.originalPageNum).then(pdfPage => {
                         const vp = pdfPage.getViewport({ scale: 0.22, rotation: (pdfPage.rotate + (page.rotation || 0)) % 360 });
                         thumbCanvas.width = vp.width;
                         thumbCanvas.height = vp.height;
@@ -4866,7 +6526,7 @@ function pmRedo() {
 
 function pmRotateSelected(deg) {
     pmPushHistory();
-    const targets = pmSelectedPages.size > 0 
+    const targets = pmSelectedPages.size > 0
         ? pmTempPages.filter(p => pmSelectedPages.has(p.id))
         : pmTempPages;
 
@@ -4971,26 +6631,24 @@ function pmAddNewPage() {
 }
 
 function pmImportDocument() {
-    const input = document.getElementById('editorFileInput');
-    if (input) {
-        input.onchange = (e) => {
-            const file = e.target.files[0];
-            if (file) {
-                pmPushHistory();
-                const newPage = {
-                    id: Date.now(),
-                    pageNumber: pmTempPages.length + 1,
-                    title: `Từ ${file.name}`,
-                    rotation: 0,
-                    elements: []
-                };
-                pmTempPages.push(newPage);
-                renderPmGrid();
-                showToast(`✓ Đã nhập thêm trang từ ${file.name}`, 'success');
-            }
-        };
-        input.click();
-    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/pdf,.pdf';
+    input.onchange = async () => {
+        if (!input.files.length) return;
+        try {
+            const source = await createEditorSource(input.files[0]);
+            pmPushHistory();
+            const pages = pagesFromEditorSource(source);
+            pmTempPages.push(...pages);
+            pmTempPages.forEach((p, i) => p.pageNumber = i + 1);
+            renderPmGrid();
+            showToast(`✓ Đã nhập ${pages.length} trang.`, 'success');
+        } catch (err) {
+            showToast('Không thể nhập PDF: ' + err.message, 'error');
+        }
+    };
+    input.click();
 }
 
 function pmMovePage(fromIdx, toIdx) {
@@ -5122,10 +6780,11 @@ function toggleFaq(el) {
 function openDocInEditor(docId, docName = '') {
     window.currentDocumentId = docId;
     window.currentDocumentName = docName || ('Tài liệu #' + docId);
-    switchView('editor');
     localStorage.setItem('editor_current_doc_id', docId);
     localStorage.setItem('editor_current_doc_name', docName || 'Tài liệu #' + docId);
     localStorage.setItem('editor_current_doc_url', '/api/documents/raw?id=' + docId);
+    hasLoadedFile = true;
+    switchView('editor');
     if (window.history && window.history.replaceState) {
         window.history.replaceState({ view: 'editor', docId: docId }, '', '/editor?docId=' + docId);
     }
@@ -5265,6 +6924,14 @@ function updateBulkActionsBar() {
 }
 
 async function deleteDocItem(docId, docName = '') {
+    if (!window.APP_IS_LOGGED_IN) {
+        showToast('Vui lòng đăng nhập tài khoản để thực hiện thao tác này.', 'info');
+        if (typeof openAuthModal === 'function') {
+            openAuthModal('login');
+        }
+        return;
+    }
+
     if (!confirm(`Bạn có chắc chắn muốn xóa tài liệu "${docName || 'tài liệu này'}"? Thao tác không thể hoàn tác.`)) {
         return;
     }
@@ -5298,6 +6965,14 @@ async function deleteDocItem(docId, docName = '') {
 }
 
 async function deleteSelectedDocuments() {
+    if (!window.APP_IS_LOGGED_IN) {
+        showToast('Vui lòng đăng nhập tài khoản để thực hiện thao tác này.', 'info');
+        if (typeof openAuthModal === 'function') {
+            openAuthModal('login');
+        }
+        return;
+    }
+
     const checked = Array.from(document.querySelectorAll('.doc-checkbox:checked'));
     if (checked.length === 0) return;
 
@@ -5332,5 +7007,1845 @@ async function deleteSelectedDocuments() {
         showToast('Lỗi kết nối: ' + err.message, 'error');
     }
 }
+
+// ==========================================================================
+// ADMIN PORTAL CLIENT-SIDE CONTROLLERS & ACTIONS (ĐỀ TÀI 12)
+// ==========================================================================
+
+/**
+ * Chuyển đổi giữa các trang/tab trong giao diện Quản trị viên (Admin Portal)
+ */
+function switchAdminTab(tabName) {
+    switchAdminPage(tabName, true);
+}
+
+/**
+ * Tải lại và đồng bộ hóa toàn bộ dữ liệu quản trị mới nhất từ máy chủ
+ */
+async function adminRefreshAllData() {
+    if (!window.APP_IS_ADMIN) return;
+
+    try {
+        const res = await fetch('/api/admin/stats');
+        const data = await res.json();
+        if (data.status === 'success' && data.stats) {
+            const s = data.stats;
+            const elUsers = document.getElementById('kpiTotalUsers');
+            const elDocs = document.getElementById('kpiTotalDocs');
+            const elStorage = document.getElementById('kpiTotalStorage');
+            const elExports = document.getElementById('kpiTotalExports');
+
+            if (elUsers) elUsers.textContent = s.total_users;
+            if (elDocs) elDocs.textContent = s.total_docs;
+            if (elStorage) elStorage.textContent = s.total_storage_mb + ' MB';
+            if (elExports) elExports.textContent = s.total_outputs;
+
+            const tabCountUsers = document.getElementById('adminTabCountUsers');
+            const tabCountDocs = document.getElementById('adminTabCountDocs');
+            const tabCountExports = document.getElementById('adminTabCountExports');
+            const sbCountUsers = document.getElementById('adminSidebarCountUsers');
+            const sbCountDocs = document.getElementById('adminSidebarCountDocs');
+            const sbCountExports = document.getElementById('adminSidebarCountExports');
+
+            if (tabCountUsers) tabCountUsers.textContent = s.total_users;
+            if (tabCountDocs) tabCountDocs.textContent = s.total_docs;
+            if (tabCountExports) tabCountExports.textContent = s.total_outputs;
+            if (sbCountUsers) sbCountUsers.textContent = s.total_users;
+            if (sbCountDocs) sbCountDocs.textContent = s.total_docs;
+            if (sbCountExports) sbCountExports.textContent = s.total_outputs;
+
+            showToast('✓ Đã cập nhật toàn bộ dữ liệu quản trị mới nhất!', 'success');
+        }
+    } catch (err) {
+        showToast('Không thể làm mới dữ liệu: ' + err.message, 'error');
+    }
+}
+
+/**
+ * Lọc danh sách người dùng tức thì theo từ khóa, vai trò (admin/user), gói (PRO/FREE) và trạng thái
+ */
+function adminFilterUsers() {
+    const searchInput = document.getElementById('adminUserSearchInput');
+    const roleSelect = document.getElementById('adminUserRoleFilter');
+    const planSelect = document.getElementById('adminUserPlanFilter');
+    const statusSelect = document.getElementById('adminUserStatusFilter');
+
+    const searchVal = (searchInput?.value || '').trim().toLowerCase();
+    const roleVal = roleSelect?.value || 'all';
+    const planVal = planSelect?.value || 'all';
+    const statusVal = statusSelect?.value || 'all';
+
+    const rows = document.querySelectorAll('.admin-user-row');
+    rows.forEach(row => {
+        const rowSearch = row.getAttribute('data-search') || '';
+        const rowRole = row.getAttribute('data-role') || '';
+        const rowPlan = row.getAttribute('data-plan') || '';
+        const rowStatus = row.getAttribute('data-status') || '';
+
+        const matchSearch = !searchVal || rowSearch.includes(searchVal);
+        const matchRole = roleVal === 'all' || rowRole === roleVal;
+        const matchPlan = planVal === 'all' || rowPlan.toUpperCase() === planVal.toUpperCase();
+        const matchStatus = statusVal === 'all' || rowStatus === statusVal;
+
+        if (matchSearch && matchRole && matchPlan && matchStatus) {
+            row.style.display = '';
+        } else {
+            row.style.display = 'none';
+        }
+    });
+}
+
+/**
+ * Mở modal Cập nhật người dùng (Screenshot 4)
+ */
+function adminOpenEditUserModal(btn) {
+    if (!window.APP_IS_ADMIN) return;
+
+    try {
+        const userJson = btn.getAttribute('data-user-json');
+        if (!userJson) return;
+        const u = JSON.parse(userJson);
+
+        document.getElementById('editUserId').value = u.id || 0;
+        document.getElementById('editUserFullName').value = u.full_name || '';
+        document.getElementById('editUserPhone').value = u.phone || '';
+        document.getElementById('editUserRole').value = u.role || 'user';
+        document.getElementById('editUserPlan').value = (u.plan || 'FREE').toUpperCase();
+        document.getElementById('editUserExpiresAt').value = u.expires_at || '';
+        document.getElementById('editUserPassword').value = '';
+        document.getElementById('editUserStatus').checked = (u.status !== 'banned');
+        document.getElementById('editUserEmailVerified').checked = (parseInt(u.email_verified) === 1);
+
+        const subId = document.getElementById('editUserSubId');
+        if (subId) subId.textContent = u.id;
+        const subEmail = document.getElementById('editUserSubEmail');
+        if (subEmail) subEmail.textContent = u.email || '';
+
+        openModal('editUserModal');
+    } catch (e) {
+        showToast('Lỗi nạp dữ liệu người dùng: ' + e.message, 'error');
+    }
+}
+
+/**
+ * Lưu thông tin cập nhật người dùng từ Modal (Screenshot 4)
+ */
+async function adminSaveUserEdit(event) {
+    event.preventDefault();
+    if (!window.APP_IS_ADMIN) return;
+
+    const btnSave = document.getElementById('btnSaveEditUser');
+    const originalText = btnSave ? btnSave.innerHTML : 'Lưu thay đổi';
+
+    const userId = parseInt(document.getElementById('editUserId').value || 0);
+    const fullName = document.getElementById('editUserFullName').value.trim();
+    const phone = document.getElementById('editUserPhone').value.trim();
+    const role = document.getElementById('editUserRole').value;
+    const plan = document.getElementById('editUserPlan').value;
+    const expiresAt = document.getElementById('editUserExpiresAt').value;
+    const isActive = document.getElementById('editUserStatus').checked;
+    const isEmailVerified = document.getElementById('editUserEmailVerified').checked;
+    const newPassword = document.getElementById('editUserPassword').value;
+
+    if (!fullName) {
+        showToast('Vui lòng nhập họ và tên người dùng.', 'warning');
+        return;
+    }
+
+    try {
+        if (btnSave) {
+            btnSave.disabled = true;
+            btnSave.innerHTML = '<span class="polling-pulse-spinner" style="width:16px;height:16px;border-color:#fff;border-top-color:transparent;display:inline-block;vertical-align:middle;margin-right:6px;"></span>Đang lưu...';
+        }
+
+        const res = await fetch('/api/admin/users/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: userId,
+                full_name: fullName,
+                phone: phone,
+                role: role,
+                plan: plan,
+                expires_at: expiresAt,
+                status: isActive ? 'active' : 'banned',
+                email_verified: isEmailVerified ? 1 : 0,
+                new_password: newPassword
+            })
+        });
+
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message || 'Cập nhật người dùng thành công!', 'success');
+            closeModal('editUserModal');
+
+            // Cập nhật DOM trực tiếp không cần reload trang
+            const roleName = role === 'admin' ? 'Quản trị viên' : 'Người dùng';
+            const statusStr = isActive ? 'active' : 'banned';
+            const statusLabel = isActive ? 'Hoạt động' : 'Bị khóa';
+            const formattedExp = expiresAt ? expiresAt.split('-').reverse().join('/') : 'Vĩnh viễn';
+
+            // Cập nhật trên Desktop row
+            const desktopRow = document.querySelector(`.admin-user-row.desktop-row[data-user-id="${userId}"]`);
+            if (desktopRow) {
+                desktopRow.setAttribute('data-role', role);
+                desktopRow.setAttribute('data-plan', plan);
+                desktopRow.setAttribute('data-status', statusStr);
+                const searchStr = (fullName + ' ' + (desktopRow.querySelector('.user-username')?.textContent || '') + ' ' + (desktopRow.querySelector('.col-email')?.textContent || '') + ' ' + phone).toLowerCase();
+                desktopRow.setAttribute('data-search', searchStr);
+
+                const nameEl = desktopRow.querySelector('.user-name-text');
+                if (nameEl) nameEl.textContent = fullName;
+
+                const phoneEl = desktopRow.querySelector('.phone-text');
+                if (phoneEl) {
+                    phoneEl.textContent = phone;
+                } else if (phone) {
+                    const emailCol = desktopRow.querySelector('.col-email');
+                    if (emailCol) {
+                        const newPhoneDiv = document.createElement('div');
+                        newPhoneDiv.className = 'phone-text';
+                        newPhoneDiv.textContent = phone;
+                        emailCol.appendChild(newPhoneDiv);
+                    }
+                }
+
+                const roleBadge = document.getElementById(`userRoleBadge-${userId}`);
+                if (roleBadge) {
+                    roleBadge.className = `admin-role-badge ${role}`;
+                    roleBadge.textContent = roleName;
+                }
+
+                const planBadge = document.getElementById(`userPlanBadge-${userId}`);
+                if (planBadge) {
+                    planBadge.className = `admin-plan-badge ${plan.toLowerCase()}`;
+                    planBadge.textContent = plan;
+                }
+
+                const statusBadge = document.getElementById(`userStatusBadge-${userId}`);
+                if (statusBadge) {
+                    statusBadge.className = `user-status-badge status-${statusStr}`;
+                    statusBadge.innerHTML = `<span class="status-dot"></span><span class="status-text">${statusLabel}</span>`;
+                }
+
+                const expText = document.getElementById(`userExpireText-${userId}`);
+                if (expText) expText.textContent = formattedExp;
+
+                const editBtn = document.getElementById(`btnEditUser-${userId}`);
+                if (editBtn) {
+                    try {
+                        const curJson = JSON.parse(editBtn.getAttribute('data-user-json') || '{}');
+                        curJson.full_name = fullName;
+                        curJson.phone = phone;
+                        curJson.role = role;
+                        curJson.plan = plan;
+                        curJson.status = statusStr;
+                        curJson.email_verified = isEmailVerified ? 1 : 0;
+                        curJson.expires_at = expiresAt;
+                        editBtn.setAttribute('data-user-json', JSON.stringify(curJson));
+                    } catch(e){}
+                }
+            }
+
+            // Cập nhật trên Mobile Card
+            const mobileCard = document.querySelector(`.user-card-mobile[data-user-id="${userId}"]`);
+            if (mobileCard) {
+                mobileCard.setAttribute('data-role', role);
+                mobileCard.setAttribute('data-plan', plan);
+                mobileCard.setAttribute('data-status', statusStr);
+
+                const mobNameEl = mobileCard.querySelector('.user-name-text');
+                if (mobNameEl) mobNameEl.textContent = fullName;
+
+                const mobRoleBadge = document.getElementById(`userRoleBadgeMob-${userId}`);
+                if (mobRoleBadge) {
+                    mobRoleBadge.className = `admin-role-badge ${role}`;
+                    mobRoleBadge.textContent = roleName;
+                }
+
+                const mobPlanBadge = document.getElementById(`userPlanBadgeMob-${userId}`);
+                if (mobPlanBadge) {
+                    mobPlanBadge.className = `admin-plan-badge ${plan.toLowerCase()}`;
+                    mobPlanBadge.textContent = plan;
+                }
+
+                const mobStatusBadge = document.getElementById(`userStatusBadgeMob-${userId}`);
+                if (mobStatusBadge) {
+                    mobStatusBadge.className = `user-status-badge status-${statusStr}`;
+                    mobStatusBadge.innerHTML = `<span class="status-dot"></span><span class="status-text">${statusLabel}</span>`;
+                }
+
+                const mobExpText = document.getElementById(`userExpireTextMob-${userId}`);
+                if (mobExpText) mobExpText.textContent = formattedExp;
+
+                const mobEditBtn = document.getElementById(`btnEditUserMob-${userId}`);
+                if (mobEditBtn) {
+                    try {
+                        const curJson = JSON.parse(mobEditBtn.getAttribute('data-user-json') || '{}');
+                        curJson.full_name = fullName;
+                        curJson.phone = phone;
+                        curJson.role = role;
+                        curJson.plan = plan;
+                        curJson.status = statusStr;
+                        curJson.email_verified = isEmailVerified ? 1 : 0;
+                        curJson.expires_at = expiresAt;
+                        mobEditBtn.setAttribute('data-user-json', JSON.stringify(curJson));
+                    } catch(e){}
+                }
+            }
+
+            // Cập nhật số liệu thống kê Admin tổng quan
+            if (typeof adminRefreshAllData === 'function') {
+                adminRefreshAllData();
+            }
+        } else {
+            showToast('Lỗi: ' + (data.message || 'Không thể lưu'), 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi kết nối máy chủ: ' + err.message, 'error');
+    } finally {
+        if (btnSave) {
+            btnSave.disabled = false;
+            btnSave.innerHTML = originalText;
+        }
+    }
+}
+
+/**
+ * Chuyển đổi vai trò người dùng (user <-> admin)
+ */
+async function adminToggleRole(userId, newRole) {
+    if (!window.APP_IS_ADMIN) return;
+
+    const roleName = newRole === 'admin' ? 'Quản trị viên' : 'Người dùng';
+    if (!confirm(`Bạn có chắc chắn muốn chuyển vai trò người dùng này thành "${roleName}"?`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/admin/users/role', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: userId, role: newRole })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+
+            // Cập nhật giao diện row
+            const badge = document.getElementById(`userRoleBadge-${userId}`);
+            if (badge) {
+                badge.className = `admin-role-badge ${newRole}`;
+                badge.textContent = roleName;
+            }
+
+            const btn = document.getElementById(`btnToggleRole-${userId}`);
+            if (btn) {
+                const nextRole = newRole === 'admin' ? 'user' : 'admin';
+                btn.setAttribute('onclick', `adminToggleRole(${userId}, '${nextRole}')`);
+                btn.textContent = newRole === 'admin' ? 'Chuyển thành User' : 'Nâng thành Admin';
+            }
+
+            const row = document.querySelector(`.admin-user-row[data-user-id="${userId}"]`);
+            if (row) {
+                row.setAttribute('data-role', newRole);
+            }
+
+            adminRefreshAllData();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi kết nối: ' + err.message, 'error');
+    }
+}
+
+/**
+ * Nâng cấp hoặc hạ gói dịch vụ người dùng (FREE <-> PRO)
+ */
+async function adminTogglePlan(userId, newPlan) {
+    if (!window.APP_IS_ADMIN) return;
+
+    try {
+        const res = await fetch('/api/admin/users/plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: userId, plan: newPlan })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+
+            const badge = document.getElementById(`userPlanBadge-${userId}`);
+            if (badge) {
+                badge.className = `admin-plan-badge ${newPlan.toLowerCase()}`;
+                badge.textContent = newPlan;
+            }
+
+            const btn = document.getElementById(`btnTogglePlan-${userId}`);
+            if (btn) {
+                const nextPlan = newPlan === 'PRO' ? 'FREE' : 'PRO';
+                btn.setAttribute('onclick', `adminTogglePlan(${userId}, '${nextPlan}')`);
+                btn.textContent = newPlan === 'PRO' ? 'Hạ FREE' : 'Cấp PRO';
+            }
+
+            const row = document.querySelector(`.admin-user-row[data-user-id="${userId}"]`);
+            if (row) {
+                row.setAttribute('data-plan', newPlan);
+            }
+
+            adminRefreshAllData();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi kết nối: ' + err.message, 'error');
+    }
+}
+
+/**
+ * Xóa tài khoản người dùng và toàn bộ dữ liệu liên quan
+ */
+async function adminDeleteUser(userId, userName) {
+    if (!window.APP_IS_ADMIN) return;
+
+    if (!confirm(`CẢNH BÁO: Bạn có chắc chắn muốn xóa tài khoản "${userName}" và toàn bộ tệp tài liệu liên quan không? Thao tác này không thể hoàn tác!`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/admin/users/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: userId })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+            const row = document.querySelector(`.admin-user-row[data-user-id="${userId}"]`);
+            if (row) {
+                row.style.transition = 'opacity 0.3s';
+                row.style.opacity = '0';
+                setTimeout(() => row.remove(), 300);
+            }
+            adminRefreshAllData();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi kết nối: ' + err.message, 'error');
+    }
+}
+
+/**
+ * Lọc danh sách tài liệu toàn hệ thống theo từ khóa và trạng thái
+ */
+function adminFilterDocs() {
+    const searchInput = document.getElementById('adminDocSearchInput');
+    const statusSelect = document.getElementById('adminDocStatusFilter');
+
+    const searchVal = (searchInput?.value || '').trim().toLowerCase();
+    const statusVal = statusSelect?.value || 'all';
+
+    const rows = document.querySelectorAll('.admin-doc-row');
+    let visibleCount = 0;
+    rows.forEach(row => {
+        const rowSearch = row.getAttribute('data-search') || '';
+        const rowStatus = row.getAttribute('data-status') || '';
+
+        const matchSearch = !searchVal || rowSearch.includes(searchVal);
+        const matchStatus = statusVal === 'all' || rowStatus === statusVal;
+
+        if (matchSearch && matchStatus) {
+            row.style.display = '';
+            visibleCount++;
+        } else {
+            row.style.display = 'none';
+        }
+    });
+
+    const countEl = document.getElementById('docTableCount');
+    if (countEl) countEl.textContent = visibleCount;
+}
+
+/**
+ * Xóa vĩnh viễn tài liệu bất kỳ khỏi hệ thống bởi Admin
+ */
+async function adminDeleteDoc(docId, docName) {
+    if (!window.APP_IS_ADMIN) return;
+
+    if (!confirm(`Bạn có chắc chắn muốn xóa vĩnh viễn tài liệu "${docName}" khỏi hệ thống máy chủ không?`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/admin/documents/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: docId })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+            const row = document.querySelector(`.admin-doc-row[data-doc-id="${docId}"]`);
+            if (row) {
+                row.style.transition = 'opacity 0.3s';
+                row.style.opacity = '0';
+                setTimeout(() => row.remove(), 300);
+            }
+            adminRefreshAllData();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi kết nối: ' + err.message, 'error');
+    }
+}
+
+/**
+ * =========================================================================
+ * QUẢN TRỊ BẢO TRÌ & GIÁM SÁT HỆ THỐNG (/admin/maintenance)
+ * =========================================================================
+ */
+
+/**
+ * Tải tình trạng ổ đĩa, dung lượng các thư mục và trạng thái bảo trì hệ thống
+ */
+async function adminLoadMaintenanceStatus() {
+    if (!window.APP_IS_ADMIN) return;
+
+    try {
+        const res = await fetch('/api/admin/maintenance/status');
+        const data = await res.json();
+        if (data.status !== 'success') return;
+
+        // 1. Cập nhật thanh ổ đĩa
+        const diskLabel = document.getElementById('diskUsageLabel');
+        const diskBar = document.getElementById('maintenanceDiskBar');
+        if (diskLabel && data.disk) {
+            diskLabel.textContent = `${data.disk.used_gb} GB / ${data.disk.total_gb} GB (Đã dùng ${data.disk.used_percent}% - Còn trống ${data.disk.free_gb} GB)`;
+        }
+        if (diskBar && data.disk) {
+            diskBar.style.width = `${Math.min(100, data.disk.used_percent)}%`;
+            if (data.disk.used_percent > 85) {
+                diskBar.style.background = 'linear-gradient(90deg, #EF4444, #F87171)';
+            } else if (data.disk.used_percent > 65) {
+                diskBar.style.background = 'linear-gradient(90deg, #F59E0B, #FBBF24)';
+            } else {
+                diskBar.style.background = 'linear-gradient(90deg, #6366F1, #8B5CF6)';
+            }
+        }
+
+        // 2. Cập nhật 4 thẻ chỉ số
+        if (data.folders) {
+            const docsEl = document.getElementById('statMaintDocs');
+            const expEl = document.getElementById('statMaintExports');
+            const prevEl = document.getElementById('statMaintPreviews');
+            const tempEl = document.getElementById('statMaintTemp');
+
+            if (docsEl && data.folders.documents) {
+                docsEl.textContent = `${data.folders.documents.count} tệp • ${data.folders.documents.mb} MB`;
+            }
+            if (expEl && data.folders.exports) {
+                expEl.textContent = `${data.folders.exports.count} tệp • ${data.folders.exports.mb} MB`;
+            }
+            if (prevEl && data.folders.previews) {
+                prevEl.textContent = `${data.folders.previews.count} ảnh • ${data.folders.previews.mb} MB`;
+            }
+            if (tempEl && data.folders.temp) {
+                tempEl.textContent = `${data.folders.temp.count} tệp • ${data.folders.temp.mb} MB`;
+            }
+        }
+
+        // 3. Cập nhật huy hiệu tệp mồ côi & cache
+        const orphanBadge = document.getElementById('maintOrphanBadge');
+        if (orphanBadge && data.orphans) {
+            orphanBadge.textContent = `${data.orphans.count} tệp rác (${data.orphans.mb} MB)`;
+        }
+
+        const cacheBadge = document.getElementById('maintPreviewCacheBadge');
+        if (cacheBadge && data.folders && data.folders.previews) {
+            cacheBadge.textContent = `${data.folders.previews.count} tệp cache tạm (${data.folders.previews.mb} MB)`;
+        }
+
+        // 4. Cập nhật Chế độ Bảo trì
+        if (data.maintenance) {
+            const toggle = document.getElementById('maintModeToggle');
+            const msgInput = document.getElementById('maintModeMessage');
+            const badge = document.getElementById('maintStatusBadge');
+            const card = document.getElementById('maintModeCard');
+
+            const isMaint = !!data.maintenance.maintenance_mode;
+            if (toggle) toggle.checked = isMaint;
+            if (msgInput && !msgInput.matches(':focus')) {
+                msgInput.value = data.maintenance.message || '';
+            }
+
+            if (badge) {
+                if (isMaint) {
+                    badge.className = 'header-stat-pill pill-admin';
+                    badge.style.background = 'rgba(239, 68, 68, 0.15)';
+                    badge.style.color = '#EF4444';
+                    badge.textContent = '● Đang Bật Chế Độ Bảo Trì';
+                } else {
+                    badge.className = 'header-stat-pill pill-active';
+                    badge.style.background = 'rgba(16, 185, 129, 0.15)';
+                    badge.style.color = '#10B981';
+                    badge.textContent = '● Hệ thống Hoạt Động Bình Thường (Live)';
+                }
+            }
+
+            if (card) {
+                card.style.borderColor = isMaint ? '#EF4444' : 'var(--border-color)';
+            }
+        }
+    } catch (err) {
+        console.error('Lỗi tải trạng thái bảo trì:', err);
+    }
+}
+
+/**
+ * Quét và dọn dẹp các tệp mồ côi (Orphan Cleanup) trên đĩa máy chủ
+ */
+async function adminRunCleanup() {
+    if (!window.APP_IS_ADMIN) return;
+
+    const btn = document.getElementById('btnAdminCleanup');
+    const resBox = document.getElementById('adminCleanupResult');
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Đang quét và dọn dẹp tệp...`;
+    }
+
+    try {
+        const res = await fetch('/api/admin/cleanup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+            if (resBox) {
+                resBox.style.display = 'block';
+                resBox.textContent = `✓ ${data.message}`;
+            }
+            adminLoadMaintenanceStatus();
+            adminRefreshAllData();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi quét dọn: ' + err.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `
+                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <span>Quét & Dọn Dẹp</span>
+            `;
+        }
+    }
+}
+
+/**
+ * Dọn sạch bộ nhớ tạm ảnh xem trước (Preview Cache Cleaner)
+ */
+async function adminRunPreviewCleanup() {
+    if (!window.APP_IS_ADMIN) return;
+
+    const btn = document.getElementById('btnAdminCleanCache');
+    const resBox = document.getElementById('adminCacheResult');
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Đang dọn dẹp cache...`;
+    }
+
+    try {
+        const res = await fetch('/api/admin/maintenance/clean-cache', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+            if (resBox) {
+                resBox.style.display = 'block';
+                resBox.textContent = `✓ ${data.message}`;
+            }
+            adminLoadMaintenanceStatus();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi dọn cache: ' + err.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `
+                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <span>Xóa Bộ Nhớ Tạm Xem Trước</span>
+            `;
+        }
+    }
+}
+
+/**
+ * Lưu trạng thái và thông điệp Chế độ Bảo trì (Maintenance Mode)
+ */
+async function adminSaveMaintenanceMode() {
+    if (!window.APP_IS_ADMIN) return;
+
+    const toggle = document.getElementById('maintModeToggle');
+    const msgInput = document.getElementById('maintModeMessage');
+    const btn = document.getElementById('btnSaveMaintMode');
+
+    const mode = toggle ? toggle.checked : false;
+    const message = msgInput ? msgInput.value.trim() : '';
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Đang lưu...`;
+    }
+
+    try {
+        const res = await fetch('/api/admin/maintenance/mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                maintenance_mode: mode,
+                message: message
+            })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+            adminLoadMaintenanceStatus();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi cập nhật bảo trì: ' + err.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `
+                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                <span>Lưu Cài Đặt Bảo Trì</span>
+            `;
+        }
+    }
+}
+
+/**
+ * =========================================================================
+ * QUẢN TRỊ CẤP BẬC GÓI DỊCH VỤ (/admin/plans)
+ * =========================================================================
+ */
+window.ADMIN_PLANS_CACHE = [];
+
+/**
+ * Tải danh sách gói dịch vụ và hiển thị bảng quản trị
+ */
+async function adminLoadPlans() {
+    if (!window.APP_IS_ADMIN) return;
+
+    const tbody = document.getElementById('adminPlansTableBody');
+    if (!tbody) return;
+
+    try {
+        const res = await fetch('/api/admin/plans');
+        const data = await res.json();
+        if (data.status !== 'success') {
+            tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: #EF4444; padding: 24px;">Lỗi tải dữ liệu gói: ${data.message || ''}</td></tr>`;
+            return;
+        }
+
+        const plans = data.plans || [];
+        window.ADMIN_PLANS_CACHE = plans;
+
+        // Cập nhật thống kê header
+        const totalEl = document.getElementById('plansTotalCount');
+        const activeEl = document.getElementById('plansActiveCount');
+        const popEl = document.getElementById('plansPopularName');
+        const sbCount = document.getElementById('adminSidebarCountPlans');
+
+        if (totalEl) totalEl.textContent = data.stats.total_plans;
+        if (activeEl) activeEl.textContent = data.stats.active_plans;
+        if (popEl) popEl.textContent = data.stats.popular_plan;
+        if (sbCount) sbCount.textContent = data.stats.total_plans;
+
+        if (plans.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--text-muted); padding: 32px;">Chưa có gói dịch vụ nào. Hãy bấm "+ Thêm gói mới" để khởi tạo!</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = plans.map(p => {
+            const badgeClass = `badge-tier-${p.plan_code.toLowerCase()}`;
+            const isActive = (parseInt(p.is_active) === 1);
+            const statusHtml = isActive 
+                ? `<span class="plan-status-pill status-active" onclick="adminTogglePlan(${p.id})" title="Bấm để tạm tắt gói">Đang bật</span>`
+                : `<span class="plan-status-pill status-inactive" onclick="adminTogglePlan(${p.id})" title="Bấm để kích hoạt gói">Đang tắt</span>`;
+
+            // Tóm tắt tính năng (3 dòng đầu)
+            const featLines = (p.features_text || '').split('\n').filter(l => l.trim().length > 0);
+            const featSummary = featLines.slice(0, 3).map(l => escapeHtml(l)).join(', ') + (featLines.length > 3 ? ` +${featLines.length - 3}` : '');
+
+            return `
+                <tr class="plan-row ${isActive ? '' : 'row-disabled'}">
+                    <td>
+                        <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px;">
+                            <span class="plan-tier-badge ${badgeClass}">${escapeHtml(p.plan_code)}</span>
+                            <strong style="font-size: 0.92rem; color: var(--text-main);">${escapeHtml(p.name)}</strong>
+                        </div>
+                    </td>
+                    <td>
+                        <strong style="font-size: 0.95rem; color: var(--text-main);">${escapeHtml(p.price_formatted)}</strong>
+                    </td>
+                    <td>
+                        <span style="font-size: 0.85rem; color: var(--text-muted);">${escapeHtml(p.duration_label)}</span>
+                    </td>
+                    <td>
+                        <span style="font-weight: 600; font-size: 0.88rem;">${p.tier_level}</span>
+                    </td>
+                    <td>
+                        <span style="font-size: 0.85rem; font-weight: 600; color: var(--text-main);">${escapeHtml(p.storage_label)}</span>
+                    </td>
+                    <td>
+                        <span style="font-size: 0.85rem;">${escapeHtml(p.upload_label)}</span>
+                    </td>
+                    <td>
+                        <span style="font-size: 0.85rem;">${escapeHtml(p.pages_label)}</span>
+                    </td>
+                    <td>
+                        <div style="font-size: 0.8rem; color: var(--text-muted); max-width: 280px; line-height: 1.4;">
+                            ${featSummary || 'Tính năng tiêu chuẩn'}
+                        </div>
+                    </td>
+                    <td style="text-align: center;">
+                        ${statusHtml}
+                    </td>
+                    <td style="text-align: right;">
+                        <div style="display: inline-flex; align-items: center; gap: 6px;">
+                            <button type="button" class="btn-icon-action" onclick="adminOpenPlanModal(${p.id})" title="Sửa gói">
+                                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            </button>
+                            ${p.plan_code !== 'FREE' ? `
+                                <button type="button" class="btn-icon-action text-danger" onclick="adminDeletePlan(${p.id})" title="Xóa gói">
+                                    <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                </button>
+                            ` : ''}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: #EF4444; padding: 24px;">Lỗi kết nối máy chủ: ${err.message}</td></tr>`;
+    }
+}
+
+/**
+ * Mở modal Thêm hoặc Sửa Gói Dịch Vụ
+ */
+function adminOpenPlanModal(planId = null) {
+    const modal = document.getElementById('adminPlanModal');
+    const title = document.getElementById('adminPlanModalTitle');
+    if (!modal) return;
+
+    const idInput = document.getElementById('planFormId');
+    const codeInput = document.getElementById('planFormCode');
+    const nameInput = document.getElementById('planFormName');
+    const priceInput = document.getElementById('planFormPrice');
+    const durInput = document.getElementById('planFormDuration');
+    const tierInput = document.getElementById('planFormTier');
+    const storageInput = document.getElementById('planFormStorage');
+    const uploadInput = document.getElementById('planFormUploadSize');
+    const pagesInput = document.getElementById('planFormPages');
+    const dpiInput = document.getElementById('planFormDpi');
+    const exportsInput = document.getElementById('planFormExports');
+    const badgeInput = document.getElementById('planFormBadge');
+    const sortInput = document.getElementById('planFormSort');
+    const featTextInput = document.getElementById('planFormFeaturesText');
+    const activeInput = document.getElementById('planFormIsActive');
+
+    const featCompress = document.getElementById('featCompress');
+    const featManifest = document.getElementById('featManifest');
+    const featWatermark = document.getElementById('featWatermark');
+    const featPriority = document.getElementById('featPriority');
+    const featBatch = document.getElementById('featBatch');
+    const featApi = document.getElementById('featApi');
+
+    if (planId === null) {
+        // Mode: Thêm mới
+        if (title) title.textContent = 'Thêm gói dịch vụ mới';
+        if (idInput) idInput.value = '0';
+        if (codeInput) { codeInput.value = ''; codeInput.readOnly = false; }
+        if (nameInput) nameInput.value = '';
+        if (priceInput) priceInput.value = '0';
+        if (durInput) durInput.value = '30';
+        if (tierInput) tierInput.value = '10';
+        if (storageInput) storageInput.value = '100';
+        if (uploadInput) uploadInput.value = '20';
+        if (pagesInput) pagesInput.value = '50';
+        if (dpiInput) dpiInput.value = '150';
+        if (exportsInput) exportsInput.value = '20';
+        if (badgeInput) badgeInput.value = '';
+        if (sortInput) sortInput.value = '1';
+        if (featTextInput) featTextInput.value = '';
+        if (activeInput) activeInput.checked = true;
+
+        if (featCompress) featCompress.checked = false;
+        if (featManifest) featManifest.checked = false;
+        if (featWatermark) featWatermark.checked = false;
+        if (featPriority) featPriority.checked = false;
+        if (featBatch) featBatch.checked = false;
+        if (featApi) featApi.checked = false;
+    } else {
+        // Mode: Chỉnh sửa
+        const plan = (window.ADMIN_PLANS_CACHE || []).find(p => parseInt(p.id) === parseInt(planId));
+        if (!plan) {
+            showToast('Không tìm thấy thông tin gói', 'error');
+            return;
+        }
+
+        if (title) title.textContent = `Sửa gói: ${plan.name} (${plan.plan_code})`;
+        if (idInput) idInput.value = plan.id;
+        if (codeInput) {
+            codeInput.value = plan.plan_code;
+            codeInput.readOnly = (plan.plan_code === 'FREE');
+        }
+        if (nameInput) nameInput.value = plan.name;
+        if (priceInput) priceInput.value = Math.round(parseFloat(plan.price));
+        if (durInput) durInput.value = plan.duration_days;
+        if (tierInput) tierInput.value = plan.tier_level;
+        if (storageInput) storageInput.value = plan.max_storage_mb;
+        if (uploadInput) uploadInput.value = plan.max_upload_size_mb;
+        if (pagesInput) pagesInput.value = plan.max_pages_per_file;
+        if (dpiInput) dpiInput.value = plan.max_dpi || '150';
+        if (exportsInput) exportsInput.value = plan.max_daily_exports;
+        if (badgeInput) badgeInput.value = plan.badge_text || '';
+        if (sortInput) sortInput.value = plan.sort_order || '1';
+        if (featTextInput) featTextInput.value = plan.features_text || '';
+        if (activeInput) activeInput.checked = (parseInt(plan.is_active) === 1);
+
+        const allowed = plan.allowed_features_arr || {};
+        if (featCompress) featCompress.checked = !!allowed.compress;
+        if (featManifest) featManifest.checked = !!allowed.manifest;
+        if (featWatermark) featWatermark.checked = !!allowed.watermark;
+        if (featPriority) featPriority.checked = !!allowed.priority;
+        if (featBatch) featBatch.checked = !!allowed.batch;
+        if (featApi) featApi.checked = !!allowed.api;
+    }
+
+    openModal('adminPlanModal');
+}
+
+/**
+ * Đóng modal gói dịch vụ
+ */
+function adminClosePlanModal() {
+    closeModal('adminPlanModal');
+}
+
+/**
+ * Lưu gói dịch vụ (Thêm mới / Cập nhật)
+ */
+async function adminSavePlan(e) {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+    if (!window.APP_IS_ADMIN) return;
+
+    const id = parseInt(document.getElementById('planFormId')?.value || '0');
+    const plan_code = document.getElementById('planFormCode')?.value.trim();
+    const name = document.getElementById('planFormName')?.value.trim();
+    const price = parseFloat(document.getElementById('planFormPrice')?.value || '0');
+    const duration_days = parseInt(document.getElementById('planFormDuration')?.value || '30');
+    const tier_level = parseInt(document.getElementById('planFormTier')?.value || '0');
+    const max_storage_mb = parseInt(document.getElementById('planFormStorage')?.value || '100');
+    const max_upload_size_mb = parseInt(document.getElementById('planFormUploadSize')?.value || '15');
+    const max_pages_per_file = parseInt(document.getElementById('planFormPages')?.value || '50');
+    const max_dpi = parseInt(document.getElementById('planFormDpi')?.value || '150');
+    const max_daily_exports = parseInt(document.getElementById('planFormExports')?.value || '20');
+    const badge_text = document.getElementById('planFormBadge')?.value.trim();
+    const sort_order = parseInt(document.getElementById('planFormSort')?.value || '1');
+    const features_text = document.getElementById('planFormFeaturesText')?.value;
+    const is_active = document.getElementById('planFormIsActive')?.checked ? 1 : 0;
+
+    const allowed_features = {
+        compress: document.getElementById('featCompress')?.checked || false,
+        manifest: document.getElementById('featManifest')?.checked || false,
+        watermark: document.getElementById('featWatermark')?.checked || false,
+        priority: document.getElementById('featPriority')?.checked || false,
+        batch: document.getElementById('featBatch')?.checked || false,
+        api: document.getElementById('featApi')?.checked || false
+    };
+
+    const btn = document.getElementById('btnAdminSavePlan');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Đang lưu...`;
+    }
+
+    try {
+        const res = await fetch('/api/admin/plans/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                id, plan_code, name, price, duration_days, tier_level,
+                max_storage_mb, max_upload_size_mb, max_pages_per_file, max_dpi,
+                max_daily_exports, badge_text, sort_order, features_text,
+                allowed_features, is_active
+            })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+            adminClosePlanModal();
+            adminLoadPlans();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi lưu gói: ' + err.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Lưu gói';
+        }
+    }
+}
+
+/**
+ * Bật / Tắt trạng thái gói trực tiếp
+ */
+async function adminTogglePlan(planId) {
+    if (!window.APP_IS_ADMIN) return;
+
+    try {
+        const res = await fetch('/api/admin/plans/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: planId })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+            adminLoadPlans();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi: ' + err.message, 'error');
+    }
+}
+
+/**
+ * Xóa gói dịch vụ
+ */
+async function adminDeletePlan(planId) {
+    if (!window.APP_IS_ADMIN) return;
+
+    const plan = (window.ADMIN_PLANS_CACHE || []).find(p => parseInt(p.id) === parseInt(planId));
+    const planName = plan ? plan.name : `ID #${planId}`;
+
+    if (!confirm(`Bạn có chắc chắn muốn xóa vĩnh viễn gói dịch vụ "${planName}" không?`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/admin/plans/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: planId })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+            adminLoadPlans();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Lỗi xóa gói: ' + err.message, 'error');
+    }
+}
+
+// =========================================================================
+// CHỨC NĂNG QUẢN LÝ THANH TOÁN (PAYMENTS) & VIETQR NAPAS 247
+// =========================================================================
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+async function openBankSettingsModal() {
+    try {
+        const res = await fetch('/api/admin/bank/settings');
+        const data = await res.json();
+        if (data.status === 'success' && data.data) {
+            const s = data.data;
+            const elCode = document.getElementById('cfgBankCode');
+            const elName = document.getElementById('cfgAccountName');
+            const elNum = document.getElementById('cfgAccountNumber');
+            const elToken = document.getElementById('cfgToken');
+            const elUrl = document.getElementById('cfgApiUrl');
+            const elMemo = document.getElementById('cfgMemoPrefix');
+            const elNotes = document.getElementById('cfgNotes');
+
+            if (elCode) elCode.value = s.bank_code || 'ACB';
+            if (elName) elName.value = s.account_name || '';
+            if (elNum) elNum.value = s.account_number || '';
+            if (elToken) {
+                elToken.value = '';
+                elToken.placeholder = s.has_token ? '•••••••••••• (Đã cấu hình - Nhập để đổi)' : 'Nhập token';
+            }
+            if (elUrl) elUrl.value = s.api_url || '';
+            if (elMemo) elMemo.value = s.memo_prefix || 'PDFPRO';
+            if (elNotes) elNotes.value = s.note || '';
+        }
+        if (typeof openModal === 'function') {
+            openModal('bankSettingsModal');
+        }
+    } catch (e) {
+        showToast('Lỗi tải cấu hình ngân hàng: ' + e.message, 'error');
+    }
+}
+
+async function saveBankSettings(event) {
+    if (event) event.preventDefault();
+    const btn = document.getElementById('btnSaveBankSettings');
+    const oldText = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Đang lưu...`;
+    }
+
+    try {
+        const payload = {
+            bank_code: document.getElementById('cfgBankCode')?.value || 'ACB',
+            account_name: document.getElementById('cfgAccountName')?.value || '',
+            account_number: document.getElementById('cfgAccountNumber')?.value || '',
+            api_url: document.getElementById('cfgApiUrl')?.value || '',
+            memo_prefix: document.getElementById('cfgMemoPrefix')?.value || 'PDFPRO',
+            note: document.getElementById('cfgNotes')?.value || ''
+        };
+        const tokenVal = document.getElementById('cfgToken')?.value?.trim();
+        if (tokenVal) {
+            payload.api_token = tokenVal;
+        }
+
+        const res = await fetch('/api/admin/bank/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message || 'Cập nhật cấu hình ngân hàng thành công!', 'success');
+            if (typeof closeModal === 'function') {
+                closeModal('bankSettingsModal');
+            }
+        } else {
+            showToast('Lỗi: ' + (data.message || 'Không thể lưu cấu hình'), 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi kết nối: ' + e.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = oldText;
+        }
+    }
+}
+
+function togglePasswordVisibility(inputId) {
+    const el = document.getElementById(inputId);
+    if (el) {
+        el.type = el.type === 'password' ? 'text' : 'password';
+    }
+}
+
+async function adminSyncBankTransactions() {
+    const btn = document.getElementById('btnSyncBank');
+    const oldHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Đang đồng bộ ACB...`;
+    }
+
+    try {
+        const res = await fetch('/api/admin/bank/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message || 'Đồng bộ giao dịch ngân hàng thành công!', 'success');
+            adminFilterInvoices();
+        } else {
+            showToast(data.message || 'Đồng bộ thất bại', 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi kết nối đồng bộ: ' + e.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = oldHtml;
+        }
+    }
+}
+
+let currentAdminChartPeriod = 'month';
+
+async function switchAdminChartPeriod(period, btnEl) {
+    currentAdminChartPeriod = period;
+    document.querySelectorAll('.btn-period-tab').forEach(b => b.classList.remove('active'));
+    if (btnEl) {
+        btnEl.classList.add('active');
+    } else {
+        const matchingBtn = document.querySelector(`.btn-period-tab[data-period="${period}"]`);
+        if (matchingBtn) matchingBtn.classList.add('active');
+    }
+
+    try {
+        const res = await fetch(`/api/admin/invoices?period=${encodeURIComponent(period)}&limit=1`);
+        const data = await res.json();
+        if (data.status === 'success' && data.stats) {
+            renderInvoiceStats(data.stats);
+        }
+    } catch (e) {
+        console.error('Lỗi chuyển kỳ thống kê:', e);
+    }
+}
+
+async function adminFilterInvoices() {
+    const userId = document.getElementById('filterInvUserId')?.value?.trim() || '';
+    const username = document.getElementById('filterInvUsername')?.value?.trim() || '';
+    const transId = document.getElementById('filterInvTransId')?.value?.trim() || '';
+    const bank = document.getElementById('filterInvBank')?.value || 'all';
+    const date = document.getElementById('filterInvDate')?.value || '';
+    const limit = document.getElementById('filterInvLimit')?.value || '25';
+    const sort = document.getElementById('filterInvSort')?.value || 'desc';
+
+    const params = new URLSearchParams();
+    if (userId) params.append('user_id', userId);
+    if (username) params.append('username', username);
+    if (transId) params.append('trans_id', transId);
+    if (bank && bank !== 'all') params.append('bank', bank);
+    if (date) params.append('date', date);
+    params.append('limit', limit);
+    params.append('sort', sort);
+    params.append('period', currentAdminChartPeriod);
+
+    try {
+        const res = await fetch('/api/admin/invoices?' + params.toString());
+        const data = await res.json();
+        if (data.status === 'success') {
+            renderInvoicesTable(data.invoices || []);
+            if (data.stats) {
+                renderInvoiceStats(data.stats);
+            }
+        }
+    } catch (e) {
+        showToast('Lỗi lọc hóa đơn: ' + e.message, 'error');
+    }
+}
+
+function adminResetInvoiceFilters() {
+    if (document.getElementById('filterInvUserId')) document.getElementById('filterInvUserId').value = '';
+    if (document.getElementById('filterInvUsername')) document.getElementById('filterInvUsername').value = '';
+    if (document.getElementById('filterInvTransId')) document.getElementById('filterInvTransId').value = '';
+    if (document.getElementById('filterInvBank')) document.getElementById('filterInvBank').value = 'all';
+    if (document.getElementById('filterInvDate')) document.getElementById('filterInvDate').value = '';
+    if (document.getElementById('filterInvLimit')) document.getElementById('filterInvLimit').value = '25';
+    if (document.getElementById('filterInvSort')) document.getElementById('filterInvSort').value = 'desc';
+    adminFilterInvoices();
+}
+
+function renderInvoicesTable(invoices) {
+    const tbody = document.getElementById('invoiceTableBody');
+    if (!tbody) return;
+
+    if (!invoices || invoices.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" class="text-center text-muted" style="padding: 24px;">Không tìm thấy giao dịch nào phù hợp với bộ lọc</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = invoices.map(inv => {
+        const fmtAmount = Number(inv.amount || 0).toLocaleString('vi-VN') + 'đ';
+        const isPaid = Number(inv.status) === 1;
+        const statusBadge = isPaid
+            ? `<span class="badge-status-dot badge-dot-paid"><span class="dot"></span> Đã thanh toán</span>`
+            : `<span class="badge-status-dot badge-dot-pending"><span class="dot"></span> Chờ thanh toán</span>`;
+        
+        const rawTime = inv.created_at || (inv.create_time ? new Date(inv.create_time * 1000).toISOString() : '');
+        const rawUpdate = inv.updated_at || rawTime;
+
+        let timeStr = '--:--:--', dateStr = '--/--/----';
+        let upTimeStr = '--:--:--', upDateStr = '--/--/----';
+
+        try {
+            if (rawTime) {
+                const d = new Date(rawTime.includes('T') ? rawTime : rawTime.replace(' ', 'T'));
+                if (!isNaN(d.getTime())) {
+                    timeStr = d.toLocaleTimeString('vi-VN', { hour12: false });
+                    dateStr = d.toLocaleDateString('vi-VN');
+                }
+            }
+            if (rawUpdate) {
+                const ud = new Date(rawUpdate.includes('T') ? rawUpdate : rawUpdate.replace(' ', 'T'));
+                if (!isNaN(ud.getTime())) {
+                    upTimeStr = ud.toLocaleTimeString('vi-VN', { hour12: false });
+                    upDateStr = ud.toLocaleDateString('vi-VN');
+                }
+            }
+        } catch (e) {}
+
+        const userEmail = escapeHtml(inv.email || inv.username || 'User');
+
+        return `
+            <tr id="invRow_${inv.id}">
+                <td style="text-align: center;">
+                    <div class="inv-action-btns">
+                        <button type="button" class="btn-inv-action btn-inv-edit" onclick="openEditInvoiceModal(${inv.id}, ${inv.status}, ${inv.amount})" title="Chỉnh sửa hóa đơn">
+                            <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                        </button>
+                        <button type="button" class="btn-inv-action btn-inv-del" onclick="adminDeleteInvoice(${inv.id})" title="Xóa hóa đơn">
+                            <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        </button>
+                    </div>
+                </td>
+                <td>
+                    <div class="inv-user-cell">
+                        <span class="user-id-pill">#${inv.user_id}</span>
+                        <a href="javascript:void(0)" class="inv-username-link" title="${userEmail}">${userEmail}</a>
+                    </div>
+                </td>
+                <td><span class="inv-code-pill">${escapeHtml(inv.trans_id || '')}</span></td>
+                <td>${statusBadge}</td>
+                <td><strong class="inv-money-green">${fmtAmount}</strong></td>
+                <td><strong class="inv-money-green">${fmtAmount}</strong></td>
+                <td><span class="inv-bank-tag">${escapeHtml(inv.payment_method || 'ACB')}</span></td>
+                <td class="inv-time-col">
+                    <div class="dt-cell">
+                        <span class="dt-time">${timeStr}</span>
+                        <span class="dt-date">${dateStr}</span>
+                    </div>
+                </td>
+                <td class="inv-time-col">
+                    <div class="dt-cell">
+                        <span class="dt-time">${upTimeStr}</span>
+                        <span class="dt-date">${upDateStr}</span>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function renderInvoiceStats(stats) {
+    if (!stats) return;
+    const elAll = document.getElementById('statAllTime');
+    const elMonth = document.getElementById('statMonth');
+    const elWeek = document.getElementById('statWeek');
+    const elToday = document.getElementById('statToday');
+
+    if (elAll && stats.all_time !== undefined) elAll.textContent = Number(stats.all_time).toLocaleString('vi-VN') + 'đ';
+    if (elMonth && stats.month !== undefined) elMonth.textContent = Number(stats.month).toLocaleString('vi-VN') + 'đ';
+    if (elWeek && stats.week !== undefined) elWeek.textContent = Number(stats.week).toLocaleString('vi-VN') + 'đ';
+    if (elToday && stats.today !== undefined) elToday.textContent = Number(stats.today).toLocaleString('vi-VN') + 'đ';
+
+    const kpiRev = document.getElementById('kpiTotalRevenue');
+    if (kpiRev && stats.all_time !== undefined) {
+        kpiRev.textContent = Number(stats.all_time).toLocaleString('vi-VN') + ' đ';
+    }
+
+    if (stats.chart_title) {
+        const titleEl = document.getElementById('chartPeriodTitle');
+        if (titleEl) titleEl.textContent = stats.chart_title;
+    }
+
+    if (Array.isArray(stats.chart_data)) {
+        const chartBars = document.getElementById('paymentChartBars');
+        const yAxisContainer = document.querySelector('.chart-y-axis');
+        const gridlinesContainer = document.querySelector('.chart-gridlines');
+
+        const chartMax = Number(stats.chart_max) || 300000;
+        const step = chartMax / 5;
+        const yTicks = [
+            chartMax,
+            Math.round(chartMax - step),
+            Math.round(chartMax - step * 2),
+            Math.round(chartMax - step * 3),
+            Math.round(chartMax - step * 4),
+            0
+        ];
+
+        if (yAxisContainer) {
+            yAxisContainer.innerHTML = yTicks.map(t => `<span class="y-tick-label">${Number(t).toLocaleString('vi-VN')}đ</span>`).join('');
+        }
+        if (gridlinesContainer) {
+            gridlinesContainer.innerHTML = yTicks.map(() => `<div class="chart-gridline"></div>`).join('');
+        }
+
+        if (chartBars) {
+            let html = '';
+            stats.chart_data.forEach(item => {
+                const amount = Number(item.amount) || 0;
+                const label = item.label || '';
+                const fullLabel = item.full_label || label;
+                const showLabel = Boolean(item.show_label);
+                const pct = Math.min(100, Math.round((amount / (chartMax || 1)) * 100));
+                const fmtAmount = Number(amount).toLocaleString('vi-VN') + 'đ';
+
+                html += `
+                    <div class="chart-bar-col" title="${escapeHtml(fullLabel)}: ${fmtAmount}">
+                        <div class="bar-value-tooltip">${fmtAmount}</div>
+                        <div class="bar-track">
+                            <div class="bar-fill ${amount > 0 ? 'active' : ''}" style="height: ${pct}%;"></div>
+                        </div>
+                        ${showLabel ? `<span class="bar-label-clean">${escapeHtml(label)}</span>` : ''}
+                    </div>
+                `;
+            });
+            chartBars.innerHTML = html;
+        }
+    } else if (stats.daily_stats && typeof stats.daily_stats === 'object') {
+        const chartBars = document.getElementById('paymentChartBars');
+        if (chartBars) {
+            const values = Object.values(stats.daily_stats);
+            const maxVal = Math.max(...values, 0);
+            const chartMax = Math.max(300000, Math.ceil((maxVal || 1) / 50000) * 50000);
+            
+            let html = '';
+            for (const [dayDate, amount] of Object.entries(stats.daily_stats)) {
+                const parts = dayDate.split('-');
+                const dayNum = `${parseInt(parts[2], 10)}/${parseInt(parts[1], 10)}`;
+                const pct = Math.min(100, Math.round((amount / chartMax) * 100));
+                const fmtAmount = Number(amount).toLocaleString('vi-VN') + 'đ';
+                html += `
+                    <div class="chart-bar-col" title="${dayDate}: ${fmtAmount}">
+                        <div class="bar-value-tooltip">${fmtAmount}</div>
+                        <div class="bar-track">
+                            <div class="bar-fill ${amount > 0 ? 'active' : ''}" style="height: ${pct}%;"></div>
+                        </div>
+                        <span class="bar-label-clean">${dayNum}</span>
+                    </div>
+                `;
+            }
+            chartBars.innerHTML = html;
+        }
+    }
+}
+
+function openEditInvoiceModal(id, status, amount) {
+    const elId = document.getElementById('editInvId');
+    const elBadge = document.getElementById('editInvIdBadge');
+    const elAmount = document.getElementById('editInvAmount');
+    const elStatus = document.getElementById('editInvStatus');
+
+    if (elId) elId.value = id;
+    if (elBadge) elBadge.textContent = id;
+    if (elAmount) elAmount.value = amount;
+    if (elStatus) elStatus.value = status;
+
+    if (typeof openModal === 'function') {
+        openModal('editInvoiceModal');
+    }
+}
+
+async function saveEditInvoice(event) {
+    if (event) event.preventDefault();
+    const id = document.getElementById('editInvId')?.value;
+    const amount = document.getElementById('editInvAmount')?.value;
+    const status = document.getElementById('editInvStatus')?.value;
+
+    try {
+        const res = await fetch('/api/admin/invoices/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, amount, status })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message || 'Cập nhật hóa đơn thành công!', 'success');
+            if (typeof closeModal === 'function') {
+                closeModal('editInvoiceModal');
+            }
+            adminFilterInvoices();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi kết nối: ' + e.message, 'error');
+    }
+}
+
+async function adminDeleteInvoice(id) {
+    if (!confirm(`Bạn có chắc chắn muốn xóa hóa đơn #${id}? Thao tác này không thể hoàn tác.`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/admin/invoices/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            showToast(data.message || 'Đã xóa hóa đơn!', 'success');
+            const row = document.getElementById(`invRow_${id}`);
+            if (row) row.remove();
+            adminFilterInvoices();
+        } else {
+            showToast('Lỗi: ' + data.message, 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi kết nối: ' + e.message, 'error');
+    }
+}
+
+let paymentPollingTimer = null;
+let paymentCountdownTimer = null;
+let paymentCountdownSeconds = 3595; // 59m 55s matching Screenshot 2
+let currentPendingTransId = null;
+
+async function openVietQrModal(planType = 'PRO', amount = 99000, existingTransId = null, existingMemo = null) {
+    if (!window.APP_IS_LOGGED_IN || !window.APP_CURRENT_USER || !window.APP_CURRENT_USER.id) {
+        showToast('Vui lòng đăng nhập tài khoản để nâng cấp gói dịch vụ!', 'info');
+        if (typeof openAuthModal === 'function') {
+            openAuthModal('login');
+        } else if (typeof openModal === 'function') {
+            openModal('authModal');
+        }
+        return;
+    }
+
+    try {
+        let transId = existingTransId;
+        let memo = existingMemo;
+        let finalAmount = amount;
+
+        // Nếu chưa có mã đơn (bấm nút Nâng cấp từ thẻ gói) -> tạo hóa đơn mới
+        if (!transId) {
+            const res = await fetch('/api/payment/create-invoice', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ plan: planType, amount: finalAmount })
+            });
+            const data = await res.json();
+            if (data.status === 'success' && data.invoice) {
+                transId = data.invoice.trans_id;
+                memo = data.invoice.memo;
+                finalAmount = data.invoice.amount;
+            } else {
+                throw new Error(data.message || 'Không thể tạo đơn thanh toán');
+            }
+        }
+
+        currentPendingTransId = transId;
+
+        // Lấy cấu hình ngân hàng ACB
+        const resBank = await fetch('/api/payment/bank-info');
+        const dataBank = await resBank.json();
+        const bank = dataBank.data || {};
+
+        const bankCode = bank.bank_code || 'ACB';
+        const bankName = bank.bank_name || 'Ngân hàng TMCP Á Châu (ACB)';
+        const accNum = bank.account_number || '17449371';
+        const accName = bank.account_name || 'VU VAN CHIEN';
+        const prefix = bank.memo_prefix || 'PDFPRO';
+
+        if (!memo) {
+            memo = `${prefix} ${window.APP_CURRENT_USER.id} ${transId}`;
+        }
+
+        // Cập nhật DOM các thành phần trong Modal matching Screenshot 2
+        const elInvCode = document.getElementById('vqrInvoiceCode');
+        const elBankFullName = document.getElementById('vqrBankFullName');
+        const elBankShort = document.getElementById('vqrBankShort');
+        const elAccName = document.getElementById('vqrAccountName');
+        const elAccNum = document.getElementById('vqrAccountNumber');
+        const elAmountDisp = document.getElementById('vqrAmountDisplay');
+        const elMemoDisp = document.getElementById('vqrMemoDisplay');
+        const elQrImg = document.getElementById('vqrQrImage');
+        const elSuccessBanner = document.getElementById('vqrSuccessBanner');
+        const elStatusText = document.getElementById('vqrStatusText');
+        const elStatusInd = document.getElementById('vqrStatusIndicator');
+
+        if (elInvCode) elInvCode.textContent = transId;
+        if (elBankFullName) elBankFullName.textContent = bankName;
+        if (elBankShort) elBankShort.textContent = bankCode;
+        if (elAccName) elAccName.textContent = accName;
+        if (elAccNum) elAccNum.textContent = accNum;
+        if (elAmountDisp) {
+            elAmountDisp.textContent = Number(finalAmount).toLocaleString('vi-VN') + 'đ';
+            elAmountDisp.dataset.rawAmount = finalAmount;
+        }
+        if (elMemoDisp) elMemoDisp.textContent = memo;
+
+        if (elSuccessBanner) elSuccessBanner.style.display = 'none';
+        if (elStatusInd) elStatusInd.style.display = 'flex';
+        if (elStatusText) elStatusText.textContent = 'Đang chờ thanh toán...';
+
+        const encodedMemo = encodeURIComponent(memo);
+        const encodedName = encodeURIComponent(accName);
+        const qrUrl = `https://api.vietqr.io/image/${bankCode.toLowerCase()}-${accNum}-compact2.png?amount=${finalAmount}&addInfo=${encodedMemo}&accountName=${encodedName}`;
+        if (elQrImg) elQrImg.src = qrUrl;
+
+        // Mở modal
+        if (typeof openModal === 'function') {
+            openModal('vietQrModal');
+        }
+
+        // Bắt đầu đếm ngược 59:55
+        startPaymentCountdown(3595);
+
+        // Bắt đầu polling kiểm tra thanh toán
+        startPaymentPolling(transId);
+
+        // Tự động refresh danh sách hóa đơn người dùng ở bảng lịch sử
+        refreshUserInvoices();
+    } catch (e) {
+        showToast('Lỗi khởi tạo thanh toán: ' + e.message, 'error');
+    }
+}
+
+function startPaymentCountdown(seconds = 3595) {
+    stopPaymentCountdown();
+    paymentCountdownSeconds = seconds;
+    updateCountdownDisplay();
+    paymentCountdownTimer = setInterval(() => {
+        paymentCountdownSeconds--;
+        if (paymentCountdownSeconds <= 0) {
+            stopPaymentCountdown();
+            const elStatusText = document.getElementById('vqrStatusText');
+            if (elStatusText) elStatusText.textContent = 'Mã QR đã hết hạn, vui lòng tạo lại!';
+        } else {
+            updateCountdownDisplay();
+        }
+    }, 1000);
+}
+
+function stopPaymentCountdown() {
+    if (paymentCountdownTimer) {
+        clearInterval(paymentCountdownTimer);
+        paymentCountdownTimer = null;
+    }
+}
+
+function updateCountdownDisplay() {
+    const el = document.getElementById('vqrTimerVal');
+    if (!el) return;
+    const m = Math.floor(paymentCountdownSeconds / 60);
+    const s = paymentCountdownSeconds % 60;
+    el.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function closeVietQrModal() {
+    stopPaymentPolling();
+    stopPaymentCountdown();
+    currentPendingTransId = null;
+    if (typeof closeModal === 'function') {
+        closeModal('vietQrModal');
+    }
+}
+
+function startPaymentPolling(transId = null) {
+    stopPaymentPolling();
+    const query = transId ? `?trans_id=${encodeURIComponent(transId)}` : '';
+    paymentPollingTimer = setInterval(async () => {
+        try {
+            const res = await fetch(`/api/payment/check-status${query}`);
+            const data = await res.json();
+            if (data.status === 'success' && (data.is_paid || data.is_pro)) {
+                stopPaymentPolling();
+                stopPaymentCountdown();
+                onPaymentSuccess(data);
+            }
+        } catch (e) {}
+    }, 3000);
+}
+
+function onPaymentSuccess(data) {
+    const elSuccessBanner = document.getElementById('vqrSuccessBanner');
+    const elStatusInd = document.getElementById('vqrStatusIndicator');
+    if (elSuccessBanner) elSuccessBanner.style.display = 'flex';
+    if (elStatusInd) elStatusInd.style.display = 'none';
+
+    showToast('🎉 Chúc mừng! Giao dịch được xác nhận, bạn đã nâng cấp thành công gói PRO!', 'success');
+
+    if (window.APP_CURRENT_USER) {
+        window.APP_CURRENT_USER.plan = 'PRO';
+    }
+
+    document.querySelectorAll('.user-plan-badge, .badge-plan, .plan-badge-text').forEach(b => {
+        b.textContent = 'PRO';
+    });
+
+    refreshUserInvoices();
+
+    setTimeout(() => {
+        closeVietQrModal();
+        window.location.reload();
+    }, 2800);
+}
+
+async function refreshUserInvoices() {
+    const btn = document.getElementById('btnRefreshInvoices');
+    if (btn) btn.classList.add('spinning');
+
+    try {
+        const res = await fetch('/api/payment/user-invoices');
+        const data = await res.json();
+        if (data.status === 'success' && Array.isArray(data.invoices)) {
+            renderUserInvoicesTable(data.invoices);
+        }
+    } catch (e) {
+    } finally {
+        if (btn) {
+            setTimeout(() => btn.classList.remove('spinning'), 600);
+        }
+    }
+}
+
+function renderUserInvoicesTable(invoices) {
+    const tbody = document.getElementById('userInvoiceTableBody');
+    if (!tbody) return;
+
+    if (!invoices || invoices.length === 0) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="7" class="text-center text-muted py-4">Chưa có giao dịch thanh toán nào được ghi nhận.</td></tr>';
+        return;
+    }
+
+    let html = '';
+    invoices.forEach(inv => {
+        const isPaid = (Number(inv.status) === 1);
+        const isFailed = (Number(inv.status) === 2);
+        const transCode = inv.trans_id || '';
+        const amountFmt = Number(inv.amount || 0).toLocaleString('vi-VN') + 'đ';
+        const dateStr = inv.created_at || '';
+        const safeDesc = (inv.description || '').replace(/'/g, "\\'");
+
+        let badge = '<span class="inv-status-badge badge-waiting">Chờ thanh toán</span>';
+        if (isPaid) badge = '<span class="inv-status-badge badge-success">Đã thanh toán</span>';
+        else if (isFailed) badge = '<span class="inv-status-badge badge-failed">Thất bại</span>';
+
+        let actionBtn = `<button type="button" class="btn-user-view-qr" onclick="openVietQrModal('PRO', ${Number(inv.amount || 99000)}, '${transCode}', '${safeDesc}')" title="Xem mã VietQR">
+            <svg class="svg-icon svg-icon-xs" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            <span>Xem QR</span>
+        </button>`;
+        if (isPaid || isFailed) {
+            actionBtn = '<span class="text-muted text-xs">Đã hoàn tất</span>';
+        }
+
+        html += `<tr id="userInvRow_${inv.id}">
+            <td><span class="user-inv-code">${transCode}</span></td>
+            <td>
+                <div class="user-inv-plan-title">
+                    <strong>Chuyên nghiệp</strong>
+                    <span class="inv-plan-sub">30 ngày</span>
+                </div>
+            </td>
+            <td><strong class="user-inv-amount">${amountFmt}</strong></td>
+            <td class="user-inv-time">${dateStr}</td>
+            <td class="user-inv-method"><span>Chuyển khoản</span></td>
+            <td>${badge}</td>
+            <td style="text-align: right;">${actionBtn}</td>
+        </tr>`;
+    });
+
+    tbody.innerHTML = html;
+}
+
+function toggleBillingCycle(isYearly) {
+    const elMonthly = document.getElementById('labelMonthly');
+    const elYearly = document.getElementById('labelYearly');
+    const proPrice = document.getElementById('proPriceValue');
+    const proPeriod = document.getElementById('proPricePeriod');
+    const proHint = document.getElementById('proYearlyHint');
+    const entPrice = document.getElementById('entPriceValue');
+    const entPeriod = document.getElementById('entPricePeriod');
+    const entHint = document.getElementById('entYearlyHint');
+
+    if (isYearly) {
+        if (elMonthly) elMonthly.classList.remove('active');
+        if (elYearly) elYearly.classList.add('active');
+        if (proPrice) proPrice.textContent = '950.000đ';
+        if (proPeriod) proPeriod.textContent = '/năm';
+        if (proHint) proHint.style.display = 'block';
+        if (entPrice) entPrice.textContent = '2.870.000đ';
+        if (entPeriod) entPeriod.textContent = '/năm';
+        if (entHint) entHint.style.display = 'block';
+    } else {
+        if (elMonthly) elMonthly.classList.add('active');
+        if (elYearly) elYearly.classList.remove('active');
+        if (proPrice) proPrice.textContent = '99.000đ';
+        if (proPeriod) proPeriod.textContent = '/ngày';
+        if (proHint) proHint.style.display = 'none';
+        if (entPrice) entPrice.textContent = '299.000đ';
+        if (entPeriod) entPeriod.textContent = '/tháng';
+        if (entHint) entHint.style.display = 'none';
+    }
+}
+
+function copyToClipboard(text, successMsg = 'Đã sao chép vào bộ nhớ tạm!') {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+            showToast(successMsg, 'success');
+        }).catch(() => {
+            fallbackCopy(text, successMsg);
+        });
+    } else {
+        fallbackCopy(text, successMsg);
+    }
+}
+
+function fallbackCopy(text, successMsg) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        document.execCommand('copy');
+        showToast(successMsg, 'success');
+    } catch (err) {
+        showToast('Không thể sao chép: ' + err, 'error');
+    }
+    document.body.removeChild(textarea);
+}
+
+// Tự động khởi tạo dữ liệu cho các trang Admin tương ứng khi tải trang
+if (typeof window !== 'undefined') {
+    const initAdminPagesOnLoad = () => {
+        if (window.APP_IS_ADMIN) {
+            const path = window.location.pathname;
+            if (path.includes('/admin/plans') || document.getElementById('adminPage-plans')?.classList.contains('active')) {
+                if (typeof adminLoadPlans === 'function') adminLoadPlans();
+            } else if (path.includes('/admin/maintenance') || document.getElementById('adminPage-maintenance')?.classList.contains('active')) {
+                if (typeof adminLoadMaintenanceStatus === 'function') adminLoadMaintenanceStatus();
+            }
+        }
+    };
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initAdminPagesOnLoad);
+    } else {
+        setTimeout(initAdminPagesOnLoad, 100);
+    }
+}
+
+
+
 
 

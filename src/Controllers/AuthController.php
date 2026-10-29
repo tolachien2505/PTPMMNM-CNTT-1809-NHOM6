@@ -66,17 +66,17 @@ class AuthController
                 return;
             }
 
-            // Thiết lập Session
-            $roleLabel = match ($user['role'] ?? '') {
-                'admin' => 'Quản trị viên',
-                'lecturer' => 'Giảng viên',
-                default => 'Thành viên',
-            };
+            // Thiết lập Session (Chỉ 2 vai trò: user và admin)
+            $isAdmin = ($user['role'] ?? '') === 'admin' || strtolower($user['email'] ?? '') === 'vvchien25@gmail.com';
+            $roleKey = $isAdmin ? 'admin' : 'user';
+            $roleLabel = $isAdmin ? 'Quản trị viên' : 'Người dùng';
             $plan = !empty($user['plan']) ? strtoupper($user['plan']) : 'FREE';
 
             $_SESSION['user_id'] = (int)$user['id'];
             $_SESSION['user_name'] = $user['full_name'];
             $_SESSION['user_role'] = $roleLabel;
+            $_SESSION['role'] = $roleKey;
+            $_SESSION['is_admin'] = $isAdmin;
             $_SESSION['user_email'] = $user['email'];
             $_SESSION['username'] = $user['username'];
             $_SESSION['user_plan'] = $plan;
@@ -88,7 +88,9 @@ class AuthController
                     'id' => (int)$user['id'],
                     'username' => $user['username'],
                     'name' => $user['full_name'],
-                    'role' => $roleLabel,
+                    'role' => $roleKey,
+                    'role_label' => $roleLabel,
+                    'is_admin' => $isAdmin,
                     'plan' => $plan,
                     'email' => $user['email']
                 ]
@@ -163,9 +165,15 @@ class AuthController
             $newId = (int)$this->pdo->lastInsertId();
 
             // Tự động đăng nhập
+            $isAdmin = (strtolower($email) === 'vvchien25@gmail.com');
+            $roleKey = $isAdmin ? 'admin' : 'user';
+            $roleLabel = $isAdmin ? 'Quản trị viên' : 'Người dùng';
+
             $_SESSION['user_id'] = $newId;
             $_SESSION['user_name'] = $fullName;
-            $_SESSION['user_role'] = 'Thành viên';
+            $_SESSION['user_role'] = $roleLabel;
+            $_SESSION['role'] = $roleKey;
+            $_SESSION['is_admin'] = $isAdmin;
             $_SESSION['user_email'] = $email;
             $_SESSION['username'] = $username;
             $_SESSION['user_plan'] = 'FREE';
@@ -177,7 +185,9 @@ class AuthController
                     'id' => $newId,
                     'username' => $username,
                     'name' => $fullName,
-                    'role' => 'Thành viên',
+                    'role' => $roleKey,
+                    'role_label' => $roleLabel,
+                    'is_admin' => $isAdmin,
                     'plan' => 'FREE',
                     'email' => $email
                 ]
@@ -235,12 +245,18 @@ class AuthController
             return;
         }
 
+        $isAdmin = !empty($_SESSION['is_admin']) || (($_SESSION['role'] ?? '') === 'admin') || (strtolower($_SESSION['user_email'] ?? '') === 'vvchien25@gmail.com');
+        $roleKey = $isAdmin ? 'admin' : 'user';
+        $roleLabel = $isAdmin ? 'Quản trị viên' : 'Người dùng';
+
         ResponseHelper::json([
             'status' => 'success',
             'user' => [
                 'id' => $_SESSION['user_id'],
                 'name' => $_SESSION['user_name'] ?? 'Người dùng',
-                'role' => $_SESSION['user_role'] ?? 'Thành viên',
+                'role' => $roleKey,
+                'role_label' => $roleLabel,
+                'is_admin' => $isAdmin,
                 'plan' => $_SESSION['user_plan'] ?? 'FREE',
                 'email' => $_SESSION['user_email'] ?? '',
                 'username' => $_SESSION['username'] ?? ''
@@ -291,16 +307,16 @@ class AuthController
                 return;
             }
 
-            $roleLabel = match ($user['role'] ?? '') {
-                'admin' => 'Quản trị viên',
-                'lecturer' => 'Giảng viên',
-                default => 'Thành viên',
-            };
+            $isAdmin = ($user['role'] ?? '') === 'admin' || strtolower($user['email'] ?? '') === 'vvchien25@gmail.com';
+            $roleKey = $isAdmin ? 'admin' : 'user';
+            $roleLabel = $isAdmin ? 'Quản trị viên' : 'Người dùng';
             $plan = !empty($user['plan']) ? strtoupper($user['plan']) : 'FREE';
 
             $_SESSION['user_id'] = (int)$user['id'];
             $_SESSION['user_name'] = $user['full_name'];
             $_SESSION['user_role'] = $roleLabel;
+            $_SESSION['role'] = $roleKey;
+            $_SESSION['is_admin'] = $isAdmin;
             $_SESSION['user_email'] = $user['email'];
             $_SESSION['username'] = $user['username'];
             $_SESSION['user_plan'] = $plan;
@@ -311,7 +327,9 @@ class AuthController
                 'user' => [
                     'id' => (int)$user['id'],
                     'name' => $user['full_name'],
-                    'role' => $roleLabel,
+                    'role' => $roleKey,
+                    'role_label' => $roleLabel,
+                    'is_admin' => $isAdmin,
                     'plan' => $plan,
                     'email' => $user['email']
                 ]

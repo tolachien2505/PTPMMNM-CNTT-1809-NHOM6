@@ -10,7 +10,12 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(100) NOT NULL UNIQUE,
     password_hash VARCHAR(255),
     full_name VARCHAR(100) NOT NULL,
-    role VARCHAR(20) DEFAULT 'student', -- 'admin', 'lecturer', 'student'
+    phone VARCHAR(20) DEFAULT NULL,
+    role VARCHAR(20) DEFAULT 'user', -- 'user' (Người dùng), 'admin' (Quản trị viên)
+    plan VARCHAR(20) DEFAULT 'FREE', -- 'FREE', 'PRO'
+    status VARCHAR(20) DEFAULT 'active', -- 'active' (Hoạt động), 'pending' (Chờ xác minh), 'banned' (Bị khóa)
+    email_verified TINYINT(1) DEFAULT 1,
+    expires_at DATE DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
