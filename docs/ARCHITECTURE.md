@@ -1,7 +1,7 @@
 # Kiến Trúc Hệ Thống (System Architecture)
 
 ## 1. Tổng Quan Kiến Trúc
-Ứng dụng **PDF Manager** được thiết kế theo kiến trúc phân lớp (Layered Architecture) với mô hình Single Page Application (SPA) kết hợp RESTful API Backend viết bằng PHP hiện đại (hỗ trợ PSR-4, PSR-12).
+Ứng dụng **PDF Manager** được thiết kế và xây dựng theo **Kiến trúc tiêu chuẩn Laravel (Laravel Standard Architecture)** với mô hình phân lớp MVC (Model - View - Controller), kết hợp Single Page Application (SPA) trên trình duyệt và hệ thống RESTful API Backend viết bằng PHP hiện đại (tuân thủ PSR-4, PSR-12).
 
 ```
 +-------------------------------------------------------------+

@@ -21,7 +21,7 @@
 | STT | Họ và Tên | Mã Sinh Viên | Lớp |
 |:---:|---|:---:|:---:|
 | **1** | **Đỗ Tiến Sơn** | **1871020508** | **CNTT 18-09** |
-| **2** | **Đỗ Anh Duy** | **1871020190** | **CNTT 18-09** |
+| **2** | **Đỗ Huy Anh Duy** | **1871020190** | **CNTT 18-09** |
 | **3** | **Vũ Văn Chiến** | **1871020088** | **CNTT 18-09** |
 
 ---
@@ -117,89 +117,100 @@ Nhóm xây dựng bộ dữ liệu thử nghiệm chuẩn gồm **6 tệp PDF**,
 
 ---
 
-## 📂 5. CẤU TRÚC THƯ MỤC DỰ ÁN
+## 📂 5. CẤU TRÚC THƯ MỤC DỰ ÁN (CHUẨN KIẾN TRÚC LARAVEL)
 
-Dự án được cấu trúc bài bản theo chuẩn PSR-4 của cộng đồng mã nguồn mở PHP:
+Dự án được thiết kế và chuẩn hóa hoàn toàn theo **Kiến trúc tiêu chuẩn Laravel (Laravel Standard Architecture)** kết hợp mô hình phân tầng **MVC (Model - View - Controller)** và quy chuẩn **PSR-4** của cộng đồng mã nguồn mở PHP.
+
+Hệ thống áp dụng đầy đủ các thành phần và nguyên tắc cốt lõi của Laravel Framework:
+- ⚡ **Routing Engine (`routes/web.php`, `routes/api.php`)**: Sử dụng cú pháp `Route::get()`, `Route::post()` chuẩn Laravel, phân tách rạch ròi giữa giao diện người dùng và hệ thống RESTful API endpoints.
+- 🚪 **Front Controller (`public/index.php`)**: Toàn bộ luồng yêu cầu HTTP đều đi qua cổng tiếp nhận duy nhất, khởi tạo Kernel và Dispatch request tới các Controller xử lý.
+- ⚙️ **Kernel & Bootstrap (`bootstrap/app.php`)**: Đóng vai trò hạt nhân khởi động ứng dụng, định nghĩa hệ thống Router, nạp View Loader, và Helper hàm phản hồi JSON (`response()->json()`).
+- 🏛️ **Tầng Ứng dụng (`app/Http/Controllers/`, `app/Models/`, `app/Services/`)**: Tổ chức mã nguồn Controller, Model và Service độc lập, tuân thủ nguyên tắc Single Responsibility.
+- 🎨 **Tầng Giao diện (`resources/views/`)**: Phân chia Layouts, Pages, Modals, Partials theo phong cách Blade/View chuẩn mực, quản lý giao diện SPA và Theme linh hoạt.
+- 🛡️ **Kho Lưu Trữ Bất Biến (`storage/`)**: Tách biệt hoàn toàn tệp gốc người dùng, tệp xuất và tệp tạm ra khỏi thư mục web công khai `public/` để bảo mật dữ liệu tuyệt đối.
 
 ```
 PHATTRIENPHANMEMMANGUONMO/
 ├── .github/                       # Quản lý mã nguồn mở & Tự động hóa CI/CD
 │   ├── workflows/
 │   │   └── ci.yml                 # Pipeline chạy PHPUnit test tự động
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug_report.md          # Biểu mẫu báo lỗi chuẩn
-│   │   └── feature_request.md     # Biểu mẫu đề xuất tính năng
+│   ├── ISSUE_TEMPLATE/            # Biểu mẫu báo lỗi và đề xuất tính năng
 │   └── pull_request_template.md   # Mẫu review code khi gộp nhánh
 │
+├── app/                           # Tầng mã nguồn nghiệp vụ chính (PSR-4 App\)
+│   ├── Http/Controllers/          # Các Controller điều hướng yêu cầu HTTP & RESTful API
+│   │   ├── HomeController.php     # Điều phối giao diện Client, Admin và trạng thái Bảo trì
+│   │   ├── AdminController.php    # Quản trị hệ thống: Thống kê, User, Tài liệu, Dọn rác
+│   │   ├── DocumentController.php # Tiếp nhận tải lên, kiểm tra MIME, metadata, xóa file
+│   │   ├── ExportController.php   # Xử lý ghép/tách PDF, lịch sử tệp xuất, Source Manifest
+│   │   ├── AuthController.php     # Xác thực tài khoản: Đăng ký, Đăng nhập, Phân quyền
+│   │   └── PaymentController.php  # Xử lý hóa đơn, cổng thanh toán tự động VietQR
+│   ├── Models/                    # Các mô hình dữ liệu (User, Document, Output, Plan...)
+│   └── Services/                  # Nghiệp vụ xử lý lõi (PdfProcessor, Storage, Security...)
+│
+├── bootstrap/                     # Khởi động ứng dụng (Application Kernel)
+│   └── app.php                    # Nạp router engine (Route::get/post), View loader, Response JSON
+│
 ├── config/                        # Cấu hình hệ thống
-│   ├── app.php                    # Cấu hình giới hạn dung lượng, thời gian, path
-│   └── database.php               # Cấu hình kết nối PDO SQLite / MySQL
+│   ├── app.php                    # Cấu hình ứng dụng, giới hạn kích thước, thời gian thực thi
+│   └── database.php               # Kết nối CSDL linh hoạt qua PDO (MySQL / SQLite)
 │
 ├── database/                      # Cơ sở dữ liệu
-│   ├── schema.sql                 # Cấu trúc 6 bảng: users, docs, pages, plans, jobs, outputs
-│   └── seed.sql                   # Dữ liệu mẫu ban đầu
+│   ├── schema.sql                 # Cấu trúc CSDL (users, documents, service_plans, invoices...)
+│   └── seed.sql                   # Dữ liệu tài khoản quản trị và dữ liệu mẫu khởi tạo
 │
-├── docs/                          # Tài liệu chuyên sâu cho phát triển
+├── docs/                          # Tài liệu chuyên sâu của đề tài
 │   ├── ARCHITECTURE.md            # Thiết kế kiến trúc phân lớp & giải pháp kỹ thuật
 │   ├── DATABASE.md                # Đặc tả chi tiết từng trường trong cơ sở dữ liệu
-│   ├── API_SPECIFICATION.md       # Tài liệu RESTful API cho lập trình viên
-│   ├── TEST_PLAN.md               # Kế hoạch và kịch bản kiểm thử
-│   └── USER_GUIDE.md              # Hướng dẫn sử dụng thao tác thực tế
+│   ├── API_SPECIFICATION.md       # Tài liệu đặc tả các RESTful API endpoints
+│   ├── TEST_PLAN.md               # Kế hoạch và kịch bản kiểm thử hệ thống
+│   └── USER_GUIDE.md              # Hướng dẫn thao tác theo 2 tình huống sử dụng thực tế
 │
-├── public/                        # Document root công khai cho Web Server
+├── public/                        # Thư mục Web Root công khai
 │   ├── assets/
 │   │   ├── css/
-│   │   │   └── style.css          # CSS thiết kế giao diện theo Dashboard hiện đại
-│   │   └── js/
-│   │       └── app.js             # Logic Frontend: Kéo thả, Xoay, Undo/Redo
-│   ├── uploads/                   # Tệp tải lên tạm (.gitkeep)
-│   └── index.php                  # Entry point chính của ứng dụng
+│   │   │   └── style.css          # CSS thiết kế giao diện hiện đại, hỗ trợ Dark/Light Theme
+│   │   ├── js/
+│   │   │   └── app.js             # Logic Frontend: Kéo-thả sắp xếp, xoay, Undo/Redo, gọi API
+│   │   └── vendor/                # Mozilla PDF.js, PDF-Lib.js, Fontkit (Xử lý PDF client-side)
+│   ├── img/                       # Logo thương hiệu, favicon và hình ảnh giao diện
+│   └── index.php                  # Front Controller tiếp nhận toàn bộ request từ trình duyệt
+│
+├── resources/                     # Tài nguyên giao diện ứng dụng (View)
+│   └── views/
+│       ├── admin/                 # Giao diện Quản trị viên (Dashboard, Users, Plans, Maintenance...)
+│       ├── layouts/
+│       │   └── app.php            # Khung Layout SPA dùng chung (Header, Theme, Modals, Toasts)
+│       ├── modals/                # Cửa sổ popup: Auth, VietQR, Chỉnh sửa gói, Đổi thông tin...
+│       ├── pages/                 # Các trang Client: Trang chủ, Tài liệu, Biên tập, Lịch sử...
+│       │   └── client_maintenance.php # Màn hình thông báo khi kích hoạt Chế độ Bảo trì
+│       └── partials/              # Thanh điều hướng (Navbar, Sidebar Client & Sidebar Admin)
+│
+├── routes/                        # Hệ thống định tuyến (Routing Engine)
+│   ├── web.php                    # Định tuyến toàn bộ giao diện Web (Client & Admin Portal)
+│   └── api.php                    # Định tuyến RESTful API (Kèm middleware xác thực & bảo trì)
 │
 ├── sample_data/                   # Bộ dữ liệu thử nghiệm 6 file PDF (~40 trang)
 │   ├── README.md                  # Thuyết minh chi tiết dữ liệu mẫu
-│   └── generate_test_pdfs.php     # Script tự động tạo 6 tệp PDF có nhãn chuẩn
+│   └── generate_test_pdfs.php     # Kịch bản tự động tạo 6 tệp PDF có nhãn chuẩn
 │
-├── src/                           # Mã nguồn chính Backend (Chuẩn PSR-4 App\)
-│   ├── Controllers/               # Điều hướng yêu cầu HTTP
-│   │   ├── AuthController.php
-│   │   ├── DocumentController.php
-│   │   ├── EditorController.php
-│   │   └── ExportController.php
-│   ├── Models/                    # Thực thể dữ liệu
-│   │   ├── Document.php
-│   │   ├── EditPlan.php
-│   │   ├── ExportJob.php
-│   │   ├── OutputDocument.php
-│   │   ├── SourcePage.php
-│   │   └── User.php
-│   ├── Services/                  # Nghiệp vụ xử lý cốt lõi
-│   │   ├── PdfPreviewService.php
-│   │   ├── PdfProcessorService.php
-│   │   ├── SecurityValidator.php
-│   │   └── StorageService.php
-│   └── Utils/                     # Tiện ích bổ trợ
-│       ├── Logger.php
-│       └── ResponseHelper.php
+├── storage/                       # Thư mục lưu trữ an toàn (Bảo mật, nằm ngoài public)
+│   ├── documents/                 # Kho lưu trữ tệp PDF gốc (Bất biến - Read-only)
+│   ├── exports/                   # Kho lưu trữ tệp PDF thành phẩm sau khi ghép/tách
+│   ├── previews/                  # Bộ nhớ đệm ảnh thumbnail từng trang PDF
+│   ├── temp/                      # Tệp tạm thời trong quá trình xử lý
+│   └── maintenance.json           # Tệp lưu cấu hình trạng thái Bảo trì hệ thống (Runtime)
 │
-├── storage/                       # Thư mục lưu trữ an toàn (Bảo mật, ngoài public)
-│   ├── documents/                 # Tệp PDF gốc (Read-only)
-│   ├── exports/                   # Tệp PDF đã xuất thành công
-│   ├── previews/                  # Ảnh thumbnail trang
-│   └── logs/                      # Nhật ký lỗi hệ thống
-│
-├── tests/                         # Thư mục kiểm thử tự động
+├── tests/                         # Thư mục kiểm thử tự động (Unit & Integration Tests)
 │   ├── TestCase1_MergeTest.php
 │   ├── TestCase2_RotateDropTest.php
 │   ├── TestCase3_SplitGroupTest.php
 │   ├── TestCase4_ErrorIsolationTest.php
 │   └── TestCase5_MultiUserSecurityTest.php
 │
-├── .env.example                   # Tệp mẫu cấu hình môi trường
-├── .gitignore                     # Cấu hình bỏ qua tệp tạm trong Git
-├── CHANGELOG.md                   # Nhật ký các phiên bản phát hành
-├── CODE_OF_CONDUCT.md             # Quy tắc ứng xử trong dự án mở
-├── CONTRIBUTING.md                # Quy định đóng góp mã nguồn
-├── composer.json                  # Quản lý phụ thuộc Composer & autoload
+├── .env.example                   # Tệp mẫu cấu hình biến môi trường
+├── .gitignore                     # Cấu hình loại trừ tệp tạm, migration và cache trong Git
+├── composer.json                  # Quản lý phụ thuộc Composer & chuẩn PSR-4 Autoload
 ├── Dockerfile                     # Đóng gói môi trường chạy PHP 8.2 Apache
 ├── docker-compose.yml             # Cấu hình khởi chạy nhanh Docker
 ├── giaodien_demo.png              # Hình ảnh thiết kế giao diện hệ thống
