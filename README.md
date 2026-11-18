@@ -26,14 +26,14 @@
 
 ---
 
-## 📸 GIAO DIỆN DEMO HỆ THỐNG (PDF MANAGER v1.0)
+## 📸 GIAO DIỆN DEMO HỆ THỐNG 
 
 Ứng dụng được thiết kế theo phong cách hiện đại, trực quan, hỗ trợ đầy đủ chế độ hiển thị trên Desktop và Thiết bị di động (Responsive):
 
 <p align="center">
-  <img src="giaodien_demo.png" alt="Giao diện PDF Manager v1.0" width="100%">
+  <img src="giaodien_demo.png" alt="Giao diện PDF Online" width="100%">
   <br>
-  <em>Hình 1: Bản thiết kế giao diện chính Dashboard và Bộ công cụ xử lý PDF của hệ thống PDF Manager</em>
+  <em>Hình 1: Bản thiết kế giao diện chính Dashboard và Bộ công cụ xử lý PDF của hệ thống PDF Online</em>
 </p>
 
 ---
@@ -43,7 +43,7 @@
 ### 🎯 Bối Cảnh Thực Tế
 Trong học tập và làm việc, người dùng thường xuyên sở hữu nhiều tệp tài liệu PDF rời rạc (chứng chỉ, đề cương, bảng điểm, biểu mẫu hành chính) và cần kết hợp thành một bộ hồ sơ đồng nhất, loại bỏ các trang trắng/trang thừa hoặc xoay lại các trang bị scan ngược chiều. Các công cụ trực tuyến hiện nay thường bắt buộc tải tệp lên máy chủ bên thứ ba gây rủi ro lộ dữ liệu, hoặc yêu cầu trả phí để thực hiện các thao tác căn bản.
 
-Ứng dụng **PDF Manager** mang lại giải pháp xử lý PDF trực tiếp và an toàn:
+Ứng dụng **PDF Online** mang lại giải pháp xử lý PDF trực tiếp và an toàn:
 - Xem trước từng trang trực quan trên trình duyệt.
 - Lựa chọn linh hoạt từng trang từ nhiều tệp khác nhau (Ví dụ: lấy trang 2 của tệp A, hai trang của tệp B ghép theo thứ tự đã định).
 - File xuất ra chuẩn xác tuyệt đối với những gì người dùng quan sát trên bản xem trước.
